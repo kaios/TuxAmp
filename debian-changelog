@@ -1,0 +1,12 @@
+tuxamp (0.1.0~alpha) unstable; urgency=medium
+
+  * First release of TuxAmp, a Winamp 2.x-style music player for Linux:
+    main window, 10-band equalizer and playlist editor, smoothly zoomable
+    together by dragging the bottom-right corner.
+  * TuxDrop: a full-screen, music-reactive visualizer with 9 presets, beat
+    detection and automatic preset cycling.
+  * Icons: Tux the penguin holding a lightning bolt.
+  * Startup voice: "TuxAmp, it really whips the penguin's ass!"
+  * See BUGFIXES.md for the bugs fixed during development.
+
+ -- Shawn Rapaz <shawnrapaz@gmail.com>  Wed, 14 Oct 2026 21:57:31 +0900

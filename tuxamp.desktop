@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TuxAmp
+Comment=Winamp-style music player for Linux
+Exec=TUXAMP_DIR/tuxamp.py %F
+Icon=tuxamp
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/mpeg;audio/x-wav;audio/wav;audio/ogg;audio/flac;audio/x-flac;audio/opus;audio/x-mod;audio/midi;audio/x-mpegurl;

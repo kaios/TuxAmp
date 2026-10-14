@@ -1,0 +1,16 @@
+TuxAmp - a Winamp-style music player for Linux
+Version v0.1.0 alpha, released 2026-10-14
+
+Author: Shawn Rapaz <shawnrapaz@gmail.com>
+Coded with the help of Claude AI (Anthropic).
+
+TuxAmp is an independent tribute to Nullsoft's Winamp 2.x and its MilkDrop and
+AVS visualization plugins. It contains no Winamp code or artwork; the skin,
+the TuxDrop visualizer and all graphics are drawn by TuxAmp itself.
+
+Bundled third-party software (inside /opt/tuxamp):
+  Python      - Python Software Foundation License
+  pygame / SDL2 / SDL2_mixer - LGPL-2.1 / zlib licenses
+  numpy       - BSD-3-Clause license
+The startup voice was generated with Piper text-to-speech
+(voice: "en_US-ryan-high").
