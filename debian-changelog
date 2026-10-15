@@ -1,3 +1,14 @@
+tuxamp (0.1.3~alpha) unstable; urgency=medium
+
+  * New Cast button on the main window, next to EQ and PL: opens the list
+    of devices to stream to. Its light is on while casting and blinks
+    while connecting / buffering.
+  * To make room, the volume and balance sliders and the EQ / PL buttons
+    are slightly narrower.
+  * README: documents the Cast button.
+
+ -- Shawn Rapaz <shawnrapaz@gmail.com>  Thu, 15 Oct 2026 12:54:12 +0900
+
 tuxamp (0.1.2~alpha) unstable; urgency=medium
 
   * README: streaming to smart devices now featured at the top ("What's

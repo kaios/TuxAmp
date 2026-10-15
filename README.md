@@ -5,9 +5,10 @@ the 10-band graphic equalizer, and the playlist editor, all drawn pixel-for-pixe
 Winamp's native 275px width, and smoothly zoomable to any size. It can also
 stream your music to Chromecast, Google/Nest speakers and DLNA smart TVs on your network.
 
-**What's new:** stream to smart devices. Right-click > **Cast to device...** (or
-**Ctrl+Shift+C**), pick a speaker or TV, and TuxAmp plays there while you keep using
-its controls. See [Casting / streaming to smart devices](#casting--streaming-to-smart-devices).
+**What's new in v0.1.3:** a **Cast button** on the main window, next to EQ and PL. Click
+it, pick a speaker or TV, and TuxAmp streams there while you keep using its controls.
+Its light is on while casting and blinks while it connects. See
+[Casting / streaming to smart devices](#casting--streaming-to-smart-devices).
 
 
 ## Run
@@ -69,7 +70,8 @@ MOD/XM/IT/S3M**, and MIDI (needs a soundfont/timidity). Playlists: **M3U/M3U8/PL
 | Ctrl+A | Select all | Ctrl+Q | Quit |
 | Ctrl+Shift+C | Cast to device | K | TuxDrop visualizer |
 
-Right-click anywhere for the main menu. Clutterbar: **O** = menu, **D** = cycle size,
+Right-click anywhere for the main menu. The **Cast button** (the screen-with-waves icon
+next to EQ and PL) opens the cast menu. Clutterbar: **O** = menu, **D** = cycle size,
 **V** = TuxDrop full-screen visualizer, **I** = file info.
 Click the small visualizer to switch spectrum / oscilloscope / off.
 
@@ -87,13 +89,16 @@ keep controlling everything from TuxAmp.
 
 ### How to cast
 
-1. Right-click TuxAmp and choose **Cast to device...**, or press **Ctrl+Shift+C**.
+1. Click the **Cast button** on the main window: the screen-with-waves icon to the
+   left of the EQ and PL buttons. You can also right-click and choose
+   **Cast to device...**, or press **Ctrl+Shift+C**.
 2. TuxAmp searches your network for about 3 seconds, and devices appear in the menu as
    they are found (for example *Living room (Chromecast)*). **Search again** refreshes
    the list.
 3. Click a device. If a song is playing, it moves to the device and carries on from the
-   same spot. The title display shows `[CAST: device name]`.
-4. To bring the sound back, open the same menu and choose **This computer**. Playback
+   same spot. The Cast button's light turns on (it blinks while connecting and
+   buffering), and the title display shows `[CAST: device name]`.
+4. To bring the sound back, click the Cast button again and choose **This computer**. Playback
    carries on from the same spot on your PC.
 
 ### While casting
@@ -131,7 +136,7 @@ needed; everything stays on your local network.
 
 ## Credits
 
-TuxAmp v0.1.2 alpha, released 2026-10-15, by **Shawn Rapaz**.
+TuxAmp v0.1.3 alpha, released 2026-10-15, by **Shawn Rapaz**.
 See `BUGFIXES.md` for what each release fixed.
 Coded with the help of Claude AI (Anthropic).
 
@@ -141,5 +146,5 @@ it contains no Winamp code or artwork. See `CREDITS` for bundled third-party sof
 ## Building the .deb
 
 ```sh
-./build-deb.sh      # -> tuxamp_0.1.2-alpha_amd64.deb (needs PyInstaller, pygame, numpy)
+./build-deb.sh      # -> tuxamp_0.1.3-alpha_amd64.deb (needs PyInstaller, pygame, numpy)
 ```

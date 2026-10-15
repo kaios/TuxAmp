@@ -2,6 +2,10 @@
 
 Author: Shawn Rapaz. Coded with the help of Claude AI (Anthropic).
 
+## v0.1.3 alpha (2026-10-15)
+
+No bug fixes in this release. It adds a Cast button to the main window.
+
 ## v0.1.2 alpha (2026-10-15)
 
 No bug fixes in this release. It updates the README to feature streaming to smart

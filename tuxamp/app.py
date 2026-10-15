@@ -16,7 +16,7 @@ from .audio import Engine
 from .meta import is_audio, read_info, display_title
 from .widgets import PopupMenu, FileBrowser, get_font, PLAYLIST_EXTS
 
-VERSION = "v0.1.2 alpha"
+VERSION = "v0.1.3 alpha"
 AUTHOR = "Shawn Rapaz"
 RELEASE_DATE = "2026-10-15"
 APP_TITLE = "TuxAmp"
@@ -31,6 +31,22 @@ ROW_H = 11
 SIZE_GRIP = 10                 # bottom-right zoom grip on the main / EQ window
 MIN_SCALE, MAX_SCALE = 1.0, 6.0  # free zoom range of the bottom-right corner grip
 SNAP = 0.015                   # a zoom this close to a whole number snaps to it (pixel-perfect)
+
+# main window: volume / balance sliders and the CAST / EQ / PL buttons beside them
+VOL_R = (107, 57, 60, 13)
+BAL_R = (169, 57, 32, 13)
+CAST_R = (203, 58, 22, 12)
+EQB_R = (225, 58, 20, 12)
+PLB_R = (245, 58, 20, 12)
+# the Cast icon (a screen with radio waves from its corner), 11x8 pixels
+CAST_ICON = ["###########",
+             "#.........#",
+             "..........#",
+             "###.......#",
+             "...#......#",
+             "##..#.....#",
+             "..#.#.....#",
+             "#.#.#.#####"]
 
 EQ_PRESETS = [
     ("Flat", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
@@ -725,8 +741,8 @@ class TuxAmp:
             ("c_o", (10, 22, 8, 8)), ("c_a", (10, 30, 8, 8)), ("c_i", (10, 38, 8, 8)),
             ("c_d", (10, 46, 8, 8)), ("c_v", (10, 54, 8, 8)),
             ("time", (36, 25, 66, 15)), ("vis", (24, 43, 76, 16)),
-            ("volume", (107, 57, 68, 13)), ("balance", (177, 57, 38, 13)),
-            ("eqbtn", (219, 58, 23, 12)), ("plbtn", (242, 58, 23, 12)),
+            ("volume", VOL_R), ("balance", BAL_R),
+            ("castbtn", CAST_R), ("eqbtn", EQB_R), ("plbtn", PLB_R),
             ("pos", (16, 72, 248, 10)),
             ("prev", (16, 88, 23, 18)), ("play", (39, 88, 23, 18)), ("pause", (62, 88, 23, 18)),
             ("stop", (85, 88, 23, 18)), ("next", (108, 88, 22, 18)), ("eject", (136, 89, 22, 16)),
@@ -1055,6 +1071,10 @@ class TuxAmp:
                 else:
                     self.vis_mode = (self.vis_mode + 1) % 3
                     self._last_vis_click = now
+            elif sid == "castbtn":
+                x, y, w, h = CAST_R
+                oy = self._sec_y("main")
+                self.cast_menu((round(x * self.scale), round((oy + y + h + 1) * self.scale)))
             elif sid == "eqbtn":
                 self.toggle_eq()
             elif sid == "plbtn":
@@ -1139,11 +1159,11 @@ class TuxAmp:
         e = self.engine
         if sec == "main":
             if sid == "volume":
-                frac = (bx - 107 - 7) / (68 - 14)
+                frac = (bx - VOL_R[0] - 7) / (VOL_R[2] - 14)
                 e.set_volume(max(0.0, min(1.0, frac)))
                 self.flash(f"VOLUME: {int(round(e.volume * 100))}%", 1)
             elif sid == "balance":
-                frac = (bx - 177 - 7) / (38 - 14)
+                frac = (bx - BAL_R[0] - 7) / (BAL_R[2] - 14)
                 b = max(-1.0, min(1.0, frac * 2 - 1))
                 if abs(b) < 0.08:
                     b = 0.0
@@ -1488,20 +1508,34 @@ class TuxAmp:
 
         # ---- sliders
         drag_id = self.drag[2] if self.drag and self.drag[0] == "slider" else None
-        skin.h_slider(s, (107, oy + 57, 68, 13), e.volume, 14, skin.level_color(e.volume),
+        skin.h_slider(s, pygame.Rect(VOL_R).move(0, oy), e.volume, 14, skin.level_color(e.volume),
                       pressed=drag_id == "volume")
-        skin.h_slider(s, (177, oy + 57, 38, 13), (e.balance + 1) / 2, 14,
+        skin.h_slider(s, pygame.Rect(BAL_R).move(0, oy), (e.balance + 1) / 2, 14,
                       skin.level_color(abs(e.balance)), pressed=drag_id == "balance")
         # centre mark of balance
-        s.fill(skin.FRAME_LO, (195, oy + 56, 2, 1))
+        s.fill(skin.FRAME_LO, (BAL_R[0] + BAL_R[2] // 2 - 1, oy + 56, 2, 1))
+
+        # ---- CAST button: its light is on while casting, blinking while it connects
+        r = e.remote
+        busy = r is not None and (r.state == "connecting" or (r.state == "loading" and e.state == "playing"))
+        cast_on = r is not None and (not busy or int(time.monotonic() * 3) % 2)
+        rr = pygame.Rect(CAST_R).move(0, oy)
+        pr = self._is_pressed("main", "castbtn")
+        skin.button(s, rr, pr)
+        s.fill(skin.LED_ON if cast_on else skin.LED_OFF, (rr.x + 3, rr.y + 5, 3, 3))
+        ix, iy = rr.x + 8 + pr, rr.y + 2 + pr
+        for j, row in enumerate(CAST_ICON):
+            for i, c in enumerate(row):
+                if c == "#":
+                    s.set_at((ix + i, iy + j), skin.ICON)
 
         # ---- EQ / PL toggles
-        for sid, r, label, on in (("eqbtn", (219, 58, 23, 12), "EQ", self.show_eq),
-                                  ("plbtn", (242, 58, 23, 12), "PL", self.show_pl)):
+        for sid, r, label, on in (("eqbtn", EQB_R, "EQ", self.show_eq),
+                                  ("plbtn", PLB_R, "PL", self.show_pl)):
             rr = pygame.Rect(r).move(0, oy)
             skin.button(s, rr, self._is_pressed("main", sid))
             s.fill(skin.LED_ON if on else skin.LED_OFF, (rr.x + 3, rr.y + 5, 3, 3))
-            skin.text(s, rr.x + 9, rr.y + 4, label, skin.ICON)
+            skin.text(s, rr.x + 8, rr.y + 4, label, skin.ICON)
 
         # ---- position bar
         if e.mode is not None and e.duration:
