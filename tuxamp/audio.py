@@ -13,7 +13,9 @@ without ever stopping or restarting playback.
 
 While casting (self.remote is a cast.CastSession) the device plays the audio
 and its position drives the clock, so the time display, seek bar and
-visualizers follow what the device is playing.
+visualizers follow what the device is playing. The stream is sent at playback
+pace, only a few seconds ahead of the device, with the EQ applied as it is
+sent, so EQ changes reach the device without re-sending (and re-buffering) it.
 """
 
 import collections
@@ -32,6 +34,8 @@ CHUNK = 1024                   # frames per queued chunk (~23 ms at 44.1 kHz)
 NFFT = 8192                    # FFT size for one chunk: >= CHUNK + NTAPS - 1
 BUFFER = 2048                  # sound card buffer (frames)
 FADE = 512                     # an EQ / balance change fades in over this many frames
+CAST_LEAD = 3.0                # while casting, send the audio this far (s) ahead of the device
+CAST_HEAD = 4.0                # ... and this much at the start, before the device plays
 
 
 def _design_eq_fir(rate, preamp_db, bands_db, ntaps=NTAPS):
@@ -89,7 +93,6 @@ class Engine:
         self._lock = threading.Lock()
         self._pending = None     # result handed from loader thread
         self._load_gen = 0
-        self._eq_due = None      # when to re-send the audio to a cast device after an EQ change
         self._autoplay = False
         self.remote = None       # cast.CastSession while casting
         self.title = ""          # shown on the cast device
@@ -105,6 +108,10 @@ class Engine:
         self._idle_seen = False  # the channel looked empty at the previous check
         self.underruns = 0       # times the feeder fell behind (for testing)
         self._cast_H = None      # EQ bands only: while casting, the preamp is the device volume
+        self._cast_fed = (None, (1.0, 1.0))   # filter / balance last sent to the device
+        self._cast_last = None   # (frame, chunk) last made for the device
+        self._cast_lock = threading.Lock()
+        self._cast_src = None    # the stream the device is reading
         threading.Thread(target=self._feeder, daemon=True, name="audio-feed").start()
 
     # ------------------------------------------------------------ loading
@@ -154,26 +161,32 @@ class Engine:
             return self.raw[a:a + n].astype(np.float32)
         return _filter(self.raw, a, n, H)
 
+    def _mix(self, a, n, old, new):
+        """Frames [a, a+n) (n <= CHUNK) with filter and balance new = (H, gains),
+        cross-faded from old across the first FADE frames, as int16."""
+        (H0, g0), (H, g) = old, new
+        ramp = np.minimum(np.arange(n, dtype=np.float32) / FADE, 1.0)[:, None]
+        if H is H0:
+            out = self._render(a, n, H)
+        else:
+            out = self._render(a, n, H0) * (1 - ramp) + self._render(a, n, H) * ramp
+        if out.shape[1] == 2:
+            if g != g0:
+                g0, g1 = np.asarray(g0, np.float32), np.asarray(g, np.float32)
+                out *= g0 + (g1 - g0) * ramp
+            elif g != (1.0, 1.0):
+                out *= np.asarray(g, np.float32)
+        return np.clip(out, -32768, 32767).astype(np.int16)
+
     def _make_chunk(self):
         """The next chunk to queue. An EQ or balance change since the last
         chunk is cross-faded across this one, so it never clicks."""
         a = self._feed_pos
         n = min(CHUNK, len(self.raw) - a)
-        H, gains = self._H, self._gains()
-        ramp = np.minimum(np.arange(n, dtype=np.float32) / FADE, 1.0)[:, None]
-        if H is self._fed_H:
-            out = self._render(a, n, H)
-        else:
-            out = self._render(a, n, self._fed_H) * (1 - ramp) + self._render(a, n, H) * ramp
-        if out.shape[1] == 2:
-            if gains != self._fed_gains:
-                g0, g1 = np.asarray(self._fed_gains, np.float32), np.asarray(gains, np.float32)
-                out *= g0 + (g1 - g0) * ramp
-            elif gains != (1.0, 1.0):
-                out *= np.asarray(gains, np.float32)
-        self._fed_H, self._fed_gains = H, gains
+        new = (self._H, self._gains())
+        pcm = self._mix(a, n, (self._fed_H, self._fed_gains), new)
+        self._fed_H, self._fed_gains = new
         self._feed_pos = a + n
-        pcm = np.clip(out, -32768, 32767).astype(np.int16)
         self._fed.append((a, pcm))
         return pygame.sndarray.make_sound(pcm)
 
@@ -273,6 +286,7 @@ class Engine:
 
     def stop(self):
         self._stop_local()
+        self._end_cast_stream()
         if self.remote is not None and self.state != "stopped":
             self.remote.stop()
         self.state = "stopped"
@@ -337,17 +351,10 @@ class Engine:
         self.preamp = preamp
         self.bands = list(bands)
         self._H = self._eq_spectrum()
-        self._cast_H = self._eq_spectrum(preamp=False)
-        if self.remote is not None:
-            if (old[0], old[1]) != (on, preamp):
-                # the preamp acts on the device's volume: heard right away
-                self.remote.set_volume(self.remote_volume())
-            def bands_heard(on, bands):          # what the device's stream depends on
-                return list(bands) if on and any(bands) else None
-            if bands_heard(old[0], old[2]) != bands_heard(on, self.bands):
-                # a cast device has already fetched audio far ahead: re-send it
-                # from the current spot once the slider has stopped moving
-                self._eq_due = time.monotonic() + 0.6
+        self._cast_H = self._eq_spectrum(preamp=False)    # picked up as the stream is sent
+        if self.remote is not None and (old[0], old[1]) != (on, preamp):
+            # the preamp acts on the device's volume: heard right away
+            self.remote.set_volume(self.remote_volume())
 
     def remote_volume(self):
         """Volume for a cast device: TuxAmp's volume with the preamp applied."""
@@ -358,18 +365,57 @@ class Engine:
 
     # ------------------------------------------------------------ casting
     def _cast_render(self, a, n):
+        """Frames [a, a+n) for the device: EQ bands and balance as they are now,
+        cross-faded from what was sent before."""
         out = np.empty((n, self.raw.shape[1]), np.int16)
-        H = self._cast_H
-        for i in range(0, n, CHUNK):
-            k = min(CHUNK, n - i)
-            out[i:i + k] = np.clip(self._render(a + i, k, H), -32768, 32767)
+        i = 0
+        while i < n:
+            c, pcm = self._cast_chunk((a + i) // CHUNK * CHUNK)
+            lo = a + i - c
+            k = min(len(pcm) - lo, n - i)
+            out[i:i + k] = pcm[lo:lo + k]
+            i += k
         return out
 
+    def _cast_chunk(self, c):
+        """The whole chunk at frame c for the device, made once even if it is
+        sent in pieces (the cross-fade must span a whole chunk)."""
+        with self._cast_lock:
+            if self._cast_last is None or self._cast_last[0] != c:
+                new = (self._cast_H, self._gains())
+                self._cast_last = (c, self._mix(c, min(CHUNK, len(self.raw) - c), self._cast_fed, new))
+                self._cast_fed = new
+            return self._cast_last
+
     def _cast_source(self, pos):
-        if self.mode == "sound":
-            return cast.PcmSource(self.raw, self.rate, int(pos * self.rate), self._gains,
-                                  render=self._cast_render)
-        return cast.FileSource(self.path, pos, self.duration)
+        self._end_cast_stream()
+        if self.mode != "sound":
+            return cast.FileSource(self.path, pos, self.duration)
+        src = cast.PcmSource(self.raw, self.rate, int(pos * self.rate), render=self._cast_render)
+        remote, t0 = self.remote, [None]
+
+        def pace():
+            # how far into the track the device may have been sent by now:
+            # a few seconds past where it is playing, so EQ changes reach it soon
+            now = time.monotonic()
+            if t0[0] is None:
+                t0[0] = now
+            lim = int((remote.position() + CAST_LEAD) * self.rate)
+            if remote.state not in ("playing", "paused"):
+                # still starting (or buffering): a head start that keeps growing,
+                # in case the device wants more before it starts
+                lim = max(lim, src.start + int((CAST_HEAD + now - t0[0]) * self.rate))
+            return lim
+        src.pace = pace
+        self._cast_src = src
+        with self._cast_lock:
+            self._cast_fed, self._cast_last = (self._cast_H, self._gains()), None
+        return src
+
+    def _end_cast_stream(self):
+        if self._cast_src is not None:
+            self._cast_src.active = False           # the device has moved on from it
+            self._cast_src = None
 
     def start_cast(self, session):
         """Move playback to a cast device, carrying on from the same spot."""
@@ -392,6 +438,7 @@ class Engine:
         pos, state = self.position(), self.state
         self.remote.close(wait)
         self.remote = None
+        self._end_cast_stream()
         if self.mode is not None and state != "stopped":
             self._start_at(pos)
             if state == "paused":
@@ -454,15 +501,6 @@ class Engine:
                 events.append("loaded")
                 if self._autoplay:
                     self._start_at(0.0)
-        if self._eq_due is not None and time.monotonic() >= self._eq_due:
-            self._eq_due = None
-            if self.remote is not None and self.mode == "sound":
-                if self.state == "playing":
-                    self._start_at(self.position())
-                elif self.state == "paused":
-                    p = self._pause_pos
-                    self._start_at(p)
-                    self.pause()
         if self.remote is not None:
             r = self.remote
             if r.state == "error":

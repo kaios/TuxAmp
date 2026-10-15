@@ -5,11 +5,12 @@ the 10-band graphic equalizer, and the playlist editor, all drawn pixel-for-pixe
 Winamp's native 275px width, and smoothly zoomable to any size. It can also
 stream your music to Chromecast, Google/Nest speakers and DLNA smart TVs on your network.
 
-**What's new in v0.1.5:** a real-time preamp. The sound follows the preamp (and every
-EQ slider) *while you drag it*, within about a tenth of a second, and nothing pauses when
-you let go. Grabbing a slider while the EQ is off now switches the EQ on, so the slider
-always does something. While casting, the preamp changes the device's volume instantly.
-(v0.1.3 added the **Cast button** next to EQ and PL for streaming to smart devices; see
+**What's new in v0.1.6:** seamless EQ while casting. Moving an EQ band slider or picking
+a preset while you cast to a smart device no longer pauses the music. The change fades
+in on the device about 3 seconds later, with no buffering and no restart. On your
+computer the preamp, every EQ slider and every preset have changed the sound in real
+time (about 0.1 s) since v0.1.5. (v0.1.3 added the **Cast button** next to EQ and PL for
+streaming to smart devices; see
 [Casting / streaming to smart devices](#casting--streaming-to-smart-devices).)
 
 
@@ -38,9 +39,10 @@ MOD/XM/IT/S3M**, and MIDI (needs a soundfont/timidity). Playlists: **M3U/M3U8/PL
 - Seek bar, volume, and stereo balance
 - Working 10-band EQ with preamp, a response-curve display, and the classic presets
   (Rock, Pop, Dance, Full Bass, ...). The EQ is applied in real time: the sound follows
-  the preamp or a band slider while you drag it (about 0.1 s behind), never pauses or
-  skips, and the visualizers show the EQ'd sound. Grabbing a slider while the EQ is off
-  switches it on.
+  the preamp, a band slider or a preset while you drag or pick it (about 0.1 s behind),
+  never pauses or skips, and the visualizers show the EQ'd sound. Grabbing a slider
+  while the EQ is off switches it on. While casting, EQ changes never pause the music
+  either.
 - **TuxDrop full-screen visualizer**, in the spirit of MilkDrop / AVS: feedback-warp
   effects, beat detection, 9 presets that cycle automatically
   (Hyperspace Tunnel, Black Hole Bloom, Kaleidoscope Dreams, Neon Rain, Plasma Pulse,
@@ -116,9 +118,11 @@ keep controlling everything from TuxAmp.
 - **Preamp:** while casting, the preamp works through the device's volume, so it is
   heard instantly with no pause. It can turn the device down as far as you like, but it
   can't make it louder than the device's maximum.
-- **EQ bands and balance** are applied to what the device plays. A cast device buffers
-  ahead, so a band change is sent once you let go of the slider; expect a second or two
-  of buffering on the device.
+- **EQ bands, presets and balance** are applied to what the device plays, with no pause
+  and no buffering. TuxAmp sends the music only about 3 seconds ahead of the device and
+  applies the EQ as it sends, so a change fades in on the device about 3 seconds later.
+  (A device's own buffer means it can't be instant; the preamp is, because it uses the
+  device's volume.)
 - **Visualizers** (the small one and TuxDrop) stay in time with the device.
 - **Every format TuxAmp plays can be cast**, including FLAC, Opus, OGG and tracker
   modules, because TuxAmp sends the decoded audio, not the original file.
@@ -128,7 +132,8 @@ keep controlling everything from TuxAmp.
 
 TuxAmp finds Google Cast devices with mDNS and DLNA devices with SSDP. It then runs a
 small built-in web server, and the device fetches the music from it as a WAV stream at
-CD quality (44.1 kHz, 16-bit). No internet connection, account or extra software is
+CD quality (44.1 kHz, 16-bit). The stream is sent at playback speed, a few seconds ahead
+of the device, so EQ changes reach it without restarting the stream. No internet connection, account or extra software is
 needed; everything stays on your local network.
 
 ### Good to know / troubleshooting
@@ -139,16 +144,15 @@ needed; everything stays on your local network.
 - **Firewall:** the device downloads the music from your computer on **TCP port 47900**.
   If you use a firewall (for example `ufw`), allow it from your network:
   `sudo ufw allow from 192.168.0.0/16 to any port 47900 proto tcp`
-- **Seeking, or letting go of an EQ band slider,** restarts the stream to the device, so
-  expect a second or two of buffering there. (The preamp never does, and on your
-  computer every slider changes the sound in real time.)
+- **Seeking** restarts the stream to the device, so expect a second or two of buffering
+  there. EQ sliders, presets, the preamp, volume and balance never do.
 - **Casting takes over** whatever the device was playing.
 - If the device stops answering, TuxAmp shows *CAST FAILED* and carries on playing on
   your computer.
 
 ## Credits
 
-TuxAmp v0.1.5 alpha, released 2026-10-15, by **Shawn Rapaz**.
+TuxAmp v0.1.6 alpha, released 2026-10-15, by **Shawn Rapaz**.
 See `BUGFIXES.md` for what each release fixed.
 Coded with the help of Claude AI (Anthropic).
 
@@ -158,5 +162,5 @@ it contains no Winamp code or artwork. See `CREDITS` for bundled third-party sof
 ## Building the .deb
 
 ```sh
-./build-deb.sh      # -> tuxamp_0.1.5-alpha_amd64.deb (needs PyInstaller, pygame, numpy)
+./build-deb.sh      # -> tuxamp_0.1.6-alpha_amd64.deb (needs PyInstaller, pygame, numpy)
 ```

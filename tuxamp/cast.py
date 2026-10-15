@@ -312,8 +312,15 @@ def discover_dlna(timeout=3.0):
 
 # ================================================================ media server
 class PcmSource:
-    """A WAV stream of decoded audio, starting at frame `start`."""
+    """A WAV stream of decoded audio, starting at frame `start`.
+
+    With `pace` set, the audio is sent at playback pace: a read waits until
+    pace() (the furthest frame of the track the device may have by now) is
+    past it. The audio is rendered as it is sent, so changes to the EQ reach
+    the device a few seconds later, without restarting the stream."""
     mime, ext = "audio/wav", "wav"
+    PROBE = 30.0                            # a read further ahead than this (s) is not paced
+    BLOCK = 0.2                             # paced audio goes out in blocks this long (s)
 
     def __init__(self, pcm, rate, start, gains=None, render=None):
         self.pcm, self.rate = pcm, rate
@@ -327,6 +334,19 @@ class PcmSource:
         self.duration = self.frames / rate
         self.size = 44 + self.frames * bpf
         self.gains = gains                  # () -> (left, right), read live
+        self.pace = None                    # () -> frame limit (see above)
+        self.active = True                  # False once the device has moved on
+
+    def _limit(self, frame):
+        """Wait until frame may be sent; returns how far may be sent, None for
+        no limit, or -1 if the stream has been dropped meanwhile."""
+        block = min(int(self.BLOCK * self.rate), self.start + self.frames - frame)
+        while self.active:
+            lim = self.pace()
+            if lim is None or lim >= frame + block or frame - lim > self.PROBE * self.rate:
+                return lim                  # (devices may peek far ahead: let them)
+            time.sleep(0.05)
+        return -1
 
     def _header(self):
         n = self.frames * self.ch * 2
@@ -343,6 +363,12 @@ class PcmSource:
         bpf = self.ch * 2
         d = off - 44
         f0, f1 = d // bpf, min(self.frames, -(-(d + n) // bpf))
+        if self.pace is not None:
+            lim = self._limit(self.start + f0)
+            if lim == -1:
+                return out
+            if lim is not None and lim > self.start + f0 and lim - (self.start + f0) <= self.PROBE * self.rate:
+                f1 = min(f1, lim - self.start)
         if self.render is not None:
             seg = self.render(self.start + f0, f1 - f0)
         else:

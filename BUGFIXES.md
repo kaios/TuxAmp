@@ -2,6 +2,78 @@
 
 Author: Shawn Rapaz. Coded with the help of Claude AI (Anthropic).
 
+Every bug fixed so far, newest first. Details for each follow below.
+
+| Version | Fixed |
+|---|---|
+| v0.1.6 | EQ sliders and presets paused the music while casting |
+| v0.1.6 | EQ / balance changes on a cast device could click |
+| v0.1.5 | Preamp not real time; paused on release |
+| v0.1.5 | Preamp did nothing while the EQ was off |
+| v0.1.5 | Rare skipped piece of audio (click) while the EQ changed |
+| v0.1.5 | Preamp change paused a cast device |
+| v0.1.4 | Moving the preamp or an EQ slider paused the music |
+| v0.1.4 | Balance was lost between pieces of audio (found during development) |
+| v0.1.1 | Chromecast connection could break at random |
+| v0.1.1 | Chromecast could start the track before its player was ready |
+| v0.1.1 | README showed the wrong startup voice line |
+| v0.1.0 | Crash (segmentation fault) clicking the equalizer or playlist |
+| v0.1.0 | Window jumped around while being dragged |
+| v0.1.0 | Drags stalled once the pointer left the window |
+| v0.1.0 | Resizing changed only one window |
+| v0.1.0 | Resizing was jerky and flickered |
+| v0.1.0 | Resizing could nudge the window |
+| v0.1.0 | Zooming could push the window off screen |
+| v0.1.0 | Visualizer leaving full screen kept the full-screen size |
+
+## v0.1.6 alpha (2026-10-15)
+
+### EQ sliders and presets paused the music while casting
+- **Symptom:** while casting to a smart device, moving an EQ band slider or picking a
+  preset made the music stop for a moment, then carry on.
+- **Cause:** a cast device downloads the music ahead of where it is playing. TuxAmp
+  sent it the whole song as fast as the device would take it, with the EQ already
+  applied, so the only way to change the EQ was to send the stream again from the
+  current spot. The device then stopped, buffered and restarted: the pause. (The
+  preamp was already fixed in v0.1.5, by using the device's volume.)
+- **Fix:** TuxAmp now sends the music at playback speed, only about 3 seconds ahead of
+  the device, and applies the EQ (and balance) as each piece is sent. An EQ change is
+  simply in the next piece the device gets, so the music never stops. It fades in on
+  the device about 3 seconds after the change, because that is how much the device
+  holds in its buffer. The stream is never re-sent for an EQ change. At the start of a
+  song the device gets a 4-second head start (more if it waits longer before playing).
+  If a device asks for a part of the song far ahead (some do, to look at the file),
+  that part is sent at once.
+
+### EQ / balance changes on a cast device could click
+- **Symptom:** found while testing the fix above. A preset change could make a click
+  on the device.
+- **Cause:** once the stream was sent at playback speed, it went out in tiny pieces
+  (a quarter of a millisecond), and the 12 ms fade between the old and new EQ was cut
+  short at the end of each piece.
+- **Fix:** the music for the device is made in whole 23 ms pieces (each made once and
+  kept, however it is sent), so every change fades in fully, and the stream goes out
+  in 0.2-second blocks.
+
+- **Tested (simulated Chromecast and DLNA TV, a 4-minute song):**
+  - Dragged an EQ band slider through the real slider code, picked the Classical,
+    Full Bass and Live presets, paused for 5 seconds, resumed, then reset to flat. The
+    stream was re-sent **0 times** and the device kept playing throughout.
+  - Each change reached the device 2.8 to 3.0 seconds later.
+  - The stream stayed 2.5 to 4.4 seconds ahead of the device and never ran short,
+    including across the pause.
+  - The device received exactly the same audio as an offline render (biggest sample
+    step 757 in both), so there are no clicks or jumps. Before the second fix the
+    preset changes made jumps of up to 13,566.
+  - All 17 casting checks pass on both devices: cast, pause/resume, seek, volume, EQ,
+    next track, back to this computer, stop, and recovery from a failing device.
+  - Preamp while casting: the device volume still follows within 20 ms, with no
+    re-send.
+  - On this computer: dragging four EQ band sliders and picking seven presets, with
+    the audio output recorded, showed no gaps, no jumps and no underruns. All the
+    local playback tests pass, and the EQ still matches the original within 1 sample
+    unit.
+
 ## v0.1.5 alpha (2026-10-15)
 
 ### The preamp still wasn't real time, and paused on release
@@ -65,6 +137,14 @@ Author: Shawn Rapaz. Coded with the help of Claude AI (Anthropic).
   the old whole-song EQ to within 1 sample unit. The slowest main-loop frame went
   from 15 ms to 4 ms.
 
+### Balance was lost between pieces of audio (found during development)
+- **Symptom:** with the new piece-by-piece playback, the balance slider stopped
+  working: the sound went back to the centre.
+- **Cause:** the sound library forgets a channel's left/right setting every time a
+  piece of audio ends.
+- **Fix:** the balance is applied to the audio itself, in each piece, and fades
+  smoothly when it changes.
+
 ## v0.1.3 alpha (2026-10-15)
 
 No bug fixes in this release. It adds a Cast button to the main window.
@@ -91,6 +171,14 @@ local network (see the README).
 - **Tested:** 8 full runs each against a simulated Chromecast and a simulated DLNA TV
   passed every check: casting, pause/resume, seek, volume, EQ change, next track,
   switching back to the computer, stop, and recovery from a failing device.
+
+### Chromecast could start the track before its player was ready
+- **Symptom:** in testing, casting to a Chromecast that was showing something else
+  could fail to start the track.
+- **Cause:** the Chromecast's first answer to "start the media player" can still
+  describe the app it was running before.
+- **Fix:** TuxAmp waits until the Chromecast reports that its media player is
+  actually running before sending the track.
 
 ### README showed the wrong startup voice line
 - **Fix:** it now says "TuxAmp, it really whips the penguin's ass!".

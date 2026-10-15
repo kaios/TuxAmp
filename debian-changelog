@@ -1,3 +1,16 @@
+tuxamp (0.1.6~alpha) unstable; urgency=medium
+
+  * Fixed: while casting, moving an EQ band slider or picking a preset
+    paused the music, because the whole stream was re-sent to the device.
+    The stream is now sent at playback pace, about 3 s ahead of the
+    device, with the EQ applied as it is sent, so changes fade in on the
+    device with no pause, no buffering and no restart.
+  * Fixed: EQ and balance changes reaching a cast device are cross-faded,
+    so they never click.
+  * Documents updated (README, BUGFIXES.md).
+
+ -- Shawn Rapaz <shawnrapaz@gmail.com>  Thu, 15 Oct 2026 15:09:50 +0900
+
 tuxamp (0.1.5~alpha) unstable; urgency=medium
 
   * Fixed: the preamp was not real time. The sound now follows the preamp
