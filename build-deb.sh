@@ -2,11 +2,11 @@
 # Builds a self-contained, compiled TuxAmp .deb (Python + pygame + numpy bundled
 # by PyInstaller, so the target machine needs no Python packages).
 #
-#   ./build-deb.sh            -> tuxamp_0.1.0-alpha_amd64.deb
+#   ./build-deb.sh            -> tuxamp_0.1.1-alpha_amd64.deb
 set -e
 
-VERSION="0.1.0~alpha"          # Debian version ("~" sorts the alpha before the final 0.1.0)
-FILE_VERSION="0.1.0-alpha"
+VERSION="0.1.1~alpha"          # Debian version ("~" sorts the alpha before the final 0.1.1)
+FILE_VERSION="0.1.1-alpha"
 ARCH="$(dpkg --print-architecture)"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$DIR/build"
@@ -83,7 +83,7 @@ Description: TuxAmp (alpha) - Winamp-style music player for Linux
  (smart TVs, speakers) on the local network.
  Plays MP3, WAV, OGG, FLAC, Opus, AIFF and tracker module files.
  .
- Version v0.1.0 alpha, released 2026-10-14 by Shawn Rapaz.
+ Version v0.1.1 alpha, released 2026-10-15 by Shawn Rapaz.
  Coded with the help of Claude AI (Anthropic).
  .
  Self-contained: bundles its own Python runtime, pygame and numpy.

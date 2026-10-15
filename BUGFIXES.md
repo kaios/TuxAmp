@@ -2,6 +2,27 @@
 
 Author: Shawn Rapaz. Coded with the help of Claude AI (Anthropic).
 
+## v0.1.1 alpha (2026-10-15)
+
+New in this release: casting to Chromecast / Google Cast and DLNA devices on the
+local network (see the README).
+
+### Chromecast connection could break at random
+- **Symptom:** while casting to a Chromecast, the connection sometimes dropped right
+  after starting a track, showing "CAST FAILED: CONNECTION TO THE DEVICE WAS LOST".
+  In testing it happened about one time in three.
+- **Cause:** the connection to a Chromecast is encrypted (TLS). TuxAmp read from it on
+  one thread while sending commands on another, and the encryption library does not
+  allow that: the two collided and garbled the data ("bad record MAC").
+- **Fix:** a single thread now owns the connection and does all reading and sending;
+  other parts of TuxAmp hand it messages through a queue.
+- **Tested:** 8 full runs each against a simulated Chromecast and a simulated DLNA TV
+  passed every check: casting, pause/resume, seek, volume, EQ change, next track,
+  switching back to the computer, stop, and recovery from a failing device.
+
+### README showed the wrong startup voice line
+- **Fix:** it now says "TuxAmp, it really whips the penguin's ass!".
+
 ## v0.1.0 alpha (2026-10-14)
 
 First release. These bugs were found and fixed during development.

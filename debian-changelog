@@ -1,3 +1,17 @@
+tuxamp (0.1.1~alpha) unstable; urgency=medium
+
+  * New: cast / stream to smart devices on the local network. Supports
+    Google Cast (Chromecast, Google and Nest speakers and speaker groups,
+    Android TV / Google TV) and DLNA renderers (smart TVs, Sonos, Kodi).
+    Right-click > Cast to device... or Ctrl+Shift+C.
+  * Playback controls, the volume slider, EQ and balance all work while
+    casting; the visualizers follow the device.
+  * README: new "Casting to smart devices" section; corrected the startup
+    voice line.
+  * See BUGFIXES.md for the bug fixed in this release.
+
+ -- Shawn Rapaz <shawnrapaz@gmail.com>  Thu, 15 Oct 2026 12:15:36 +0900
+
 tuxamp (0.1.0~alpha) unstable; urgency=medium
 
   * First release of TuxAmp, a Winamp 2.x-style music player for Linux:
@@ -5,9 +19,6 @@ tuxamp (0.1.0~alpha) unstable; urgency=medium
     together by dragging the bottom-right corner.
   * TuxDrop: a full-screen, music-reactive visualizer with 9 presets, beat
     detection and automatic preset cycling.
-  * Cast to smart devices on the local network: Chromecast / Google Cast
-    (Chromecast, Google and Nest speakers, Android TV) and DLNA renderers
-    (smart TVs, Sonos, Kodi), with the EQ applied to the cast audio.
   * Icons: Tux the penguin holding a lightning bolt.
   * Startup voice: "TuxAmp, it really whips the penguin's ass!"
   * See BUGFIXES.md for the bugs fixed during development.
