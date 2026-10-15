@@ -1,3 +1,11 @@
+tuxamp (0.1.2~alpha) unstable; urgency=medium
+
+  * README: streaming to smart devices now featured at the top ("What's
+    new"); section renamed "Casting / streaming to smart devices".
+  * No code changes since 0.1.1.
+
+ -- Shawn Rapaz <shawnrapaz@gmail.com>  Thu, 15 Oct 2026 12:32:08 +0900
+
 tuxamp (0.1.1~alpha) unstable; urgency=medium
 
   * New: cast / stream to smart devices on the local network. Supports

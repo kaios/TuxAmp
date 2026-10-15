@@ -5,6 +5,10 @@ the 10-band graphic equalizer, and the playlist editor, all drawn pixel-for-pixe
 Winamp's native 275px width, and smoothly zoomable to any size. It can also
 stream your music to Chromecast, Google/Nest speakers and DLNA smart TVs on your network.
 
+**What's new:** stream to smart devices. Right-click > **Cast to device...** (or
+**Ctrl+Shift+C**), pick a speaker or TV, and TuxAmp plays there while you keep using
+its controls. See [Casting / streaming to smart devices](#casting--streaming-to-smart-devices).
+
 
 ## Run
 
@@ -46,7 +50,7 @@ MOD/XM/IT/S3M**, and MIDI (needs a soundfont/timidity). Playlists: **M3U/M3U8/PL
 - Shuffle and repeat; window-shade mode (double-click the title bar)
 - Drag & drop files or folders onto the window
 - **Cast / stream to smart devices** on your network (Chromecast, Google/Nest speakers,
-  smart TVs, Sonos, Kodi). See [Casting to smart devices](#casting-to-smart-devices) below.
+  smart TVs, Sonos, Kodi). See [Casting / streaming to smart devices](#casting--streaming-to-smart-devices) below.
 - Startup voice: "TuxAmp, it really whips the penguin's ass!" (click the lightning-bolt logo to
   hear it again; turn it off in the right-click menu or with `--no-intro`)
 - Remembers volume, EQ, playlist, and window layout in `~/.config/tuxamp/config.json`
@@ -69,7 +73,7 @@ Right-click anywhere for the main menu. Clutterbar: **O** = menu, **D** = cycle 
 **V** = TuxDrop full-screen visualizer, **I** = file info.
 Click the small visualizer to switch spectrum / oscilloscope / off.
 
-## Casting to smart devices
+## Casting / streaming to smart devices
 
 TuxAmp can stream what it is playing to a speaker or TV on your home network, and you
 keep controlling everything from TuxAmp.
@@ -127,7 +131,7 @@ needed; everything stays on your local network.
 
 ## Credits
 
-TuxAmp v0.1.1 alpha, released 2026-10-15, by **Shawn Rapaz**.
+TuxAmp v0.1.2 alpha, released 2026-10-15, by **Shawn Rapaz**.
 See `BUGFIXES.md` for what each release fixed.
 Coded with the help of Claude AI (Anthropic).
 
@@ -137,5 +141,5 @@ it contains no Winamp code or artwork. See `CREDITS` for bundled third-party sof
 ## Building the .deb
 
 ```sh
-./build-deb.sh      # -> tuxamp_0.1.1-alpha_amd64.deb (needs PyInstaller, pygame, numpy)
+./build-deb.sh      # -> tuxamp_0.1.2-alpha_amd64.deb (needs PyInstaller, pygame, numpy)
 ```

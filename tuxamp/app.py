@@ -16,7 +16,7 @@ from .audio import Engine
 from .meta import is_audio, read_info, display_title
 from .widgets import PopupMenu, FileBrowser, get_font, PLAYLIST_EXTS
 
-VERSION = "v0.1.1 alpha"
+VERSION = "v0.1.2 alpha"
 AUTHOR = "Shawn Rapaz"
 RELEASE_DATE = "2026-10-15"
 APP_TITLE = "TuxAmp"

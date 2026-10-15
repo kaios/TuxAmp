@@ -2,6 +2,11 @@
 
 Author: Shawn Rapaz. Coded with the help of Claude AI (Anthropic).
 
+## v0.1.2 alpha (2026-10-15)
+
+No bug fixes in this release. It updates the README to feature streaming to smart
+devices.
+
 ## v0.1.1 alpha (2026-10-15)
 
 New in this release: casting to Chromecast / Google Cast and DLNA devices on the
