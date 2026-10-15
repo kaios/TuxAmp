@@ -5,11 +5,18 @@ which gives us sample-accurate seeking, stereo balance, a 10-band EQ and
 real sample data for the visualizer.  Formats that cannot be decoded into a
 Sound (MIDI, some trackers) fall back to streaming via mixer.music.
 
+Decoded tracks are played in short chunks (about 93 ms) that a feeder thread
+queues on the mixer channel just ahead of the playhead. The EQ (with its
+preamp) and the balance are applied to each chunk as it is made, so moving a
+slider takes effect within a fraction of a second, cross-faded from the old
+setting, without ever stopping or restarting playback.
+
 While casting (self.remote is a cast.CastSession) the device plays the audio
 and its position drives the clock, so the time display, seek bar and
 visualizers follow what the device is playing.
 """
 
+import collections
 import threading
 import time
 
@@ -19,9 +26,12 @@ import pygame
 from . import cast
 
 EQ_FREQS = [60, 170, 310, 600, 1000, 3000, 6000, 12000, 14000, 16000]
+NTAPS = 4096                   # EQ filter length
+CHUNK = 4096                   # frames per queued chunk (~93 ms at 44.1 kHz)
+NFFT = 8192                    # FFT size for one chunk: >= CHUNK + NTAPS - 1
 
 
-def _design_eq_fir(rate, preamp_db, bands_db, ntaps=4096):
+def _design_eq_fir(rate, preamp_db, bands_db, ntaps=NTAPS):
     freqs = np.fft.rfftfreq(ntaps, 1.0 / rate)
     logf = np.log10(np.maximum(freqs, 20.0))
     db = np.interp(logf, np.log10(EQ_FREQS), bands_db) + preamp_db
@@ -31,25 +41,18 @@ def _design_eq_fir(rate, preamp_db, bands_db, ntaps=4096):
     return h.astype(np.float64)
 
 
-def _apply_fir(x, h, cancel=lambda: False):
-    """Overlap-add FFT convolution of x (n, ch) with linear-phase FIR h."""
-    n, ch = x.shape
-    m = len(h)
-    block = 1 << 16
-    nfft = 1
-    while nfft < block + m - 1:
-        nfft <<= 1
-    H = np.fft.rfft(h, nfft)[:, None]
-    out = np.zeros((n + m - 1, ch), dtype=np.float32)
-    for s in range(0, n, block):
-        if cancel():
-            return None
-        seg = x[s:s + block].astype(np.float32)
-        y = np.fft.irfft(np.fft.rfft(seg, nfft, axis=0) * H, nfft, axis=0)
-        ln = min(len(seg) + m - 1, len(out) - s)
-        out[s:s + ln] += y[:ln]
-    d = m // 2
-    return np.clip(out[d:d + n], -32768, 32767).astype(np.int16)
+def _filter(raw, a, n, H):
+    """Frames [a, a+n) of raw (n <= CHUNK) through the linear-phase EQ filter
+    whose spectrum is H, as float32. Reads the neighbouring samples it needs
+    straight from raw, so any part of a track can be filtered on its own."""
+    d = NTAPS // 2
+    s, e = a + d - (NTAPS - 1), a + n + d
+    seg = np.zeros((e - s, raw.shape[1]), np.float32)
+    lo, hi = max(s, 0), min(e, len(raw))
+    if hi > lo:
+        seg[lo - s:hi - s] = raw[lo:hi]
+    y = np.fft.irfft(np.fft.rfft(seg, NFFT, axis=0) * H, NFFT, axis=0)
+    return y[NTAPS - 1:NTAPS - 1 + n].astype(np.float32)
 
 
 class Engine:
@@ -62,7 +65,6 @@ class Engine:
 
         self.path = None
         self.raw = None          # decoded int16 array (n, ch)
-        self.pcm = None          # array actually being played (EQ applied)
         self.mode = None         # "sound" | "music" | None
         self.duration = 0.0
         self.state = "stopped"   # stopped | playing | paused
@@ -81,12 +83,20 @@ class Engine:
         self._lock = threading.Lock()
         self._pending = None     # result handed from loader thread
         self._load_gen = 0
-        self._eq_gen = 0
-        self._eq_pending = None
-        self._eq_due = None
+        self._eq_due = None      # when to re-send the audio to a cast device after an EQ change
         self._autoplay = False
         self.remote = None       # cast.CastSession while casting
         self.title = ""          # shown on the cast device
+
+        # chunked playback (see the module docstring)
+        self._H = None           # EQ filter spectrum, None = EQ off / flat
+        self._feed_lock = threading.RLock()
+        self._feeding = False
+        self._feed_pos = 0       # next frame to queue
+        self._fed_H = None       # filter / balance used for the last chunk queued,
+        self._fed_gains = (1.0, 1.0)   # so a change can be cross-faded
+        self._fed = collections.deque(maxlen=6)   # (start frame, chunk) for the visualizers
+        threading.Thread(target=self._feeder, daemon=True, name="audio-feed").start()
 
     # ------------------------------------------------------------ loading
     def load(self, path, autoplay=True):
@@ -94,15 +104,14 @@ class Engine:
         self._load_gen += 1
         gen = self._load_gen
         self.path = path
-        self.raw = self.pcm = None
+        self.raw = None
         self.mode = None
         self.duration = 0.0
         self.loading = True
         self._autoplay = autoplay
-        eq = self._eq_params()
-        threading.Thread(target=self._loader, args=(gen, path, eq), daemon=True).start()
+        threading.Thread(target=self._loader, args=(gen, path), daemon=True).start()
 
-    def _loader(self, gen, path, eq):
+    def _loader(self, gen, path):
         result = {"gen": gen, "path": path}
         try:
             snd = pygame.mixer.Sound(path)
@@ -113,20 +122,68 @@ class Engine:
             if arr.dtype != np.int16:
                 arr = arr.astype(np.int16)
             result["raw"] = np.ascontiguousarray(arr)
-            if eq is not None and gen == self._load_gen:
-                result["pcm"] = _apply_fir(arr, eq, lambda: gen != self._load_gen)
         except Exception as e:
             result["error"] = e
         with self._lock:
             if gen == self._load_gen:
                 self._pending = result
 
-    def _eq_params(self):
-        if not self.eq_on:
+    def _eq_spectrum(self):
+        if not self.eq_on or (self.preamp == 0 and not any(self.bands)):
             return None
-        if self.preamp == 0 and not any(self.bands):
-            return None
-        return _design_eq_fir(self.rate, self.preamp, self.bands)
+        h = _design_eq_fir(self.rate, self.preamp, self.bands)
+        return np.fft.rfft(h, NFFT)[:, None]
+
+    # ------------------------------------------------------------ chunked playback
+    def _gains(self):
+        return min(1.0, 1.0 - self.balance), min(1.0, 1.0 + self.balance)
+
+    def _render(self, a, n, H):
+        """Frames [a, a+n) through the EQ filter H (None = no EQ), as float32."""
+        if H is None:
+            return self.raw[a:a + n].astype(np.float32)
+        return _filter(self.raw, a, n, H)
+
+    def _make_chunk(self):
+        """The next chunk to queue. An EQ or balance change since the last
+        chunk is cross-faded across this one, so it never clicks."""
+        a = self._feed_pos
+        n = min(CHUNK, len(self.raw) - a)
+        H, gains = self._H, self._gains()
+        ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)[:, None]
+        if H is self._fed_H:
+            out = self._render(a, n, H)
+        else:
+            out = self._render(a, n, self._fed_H) * (1 - ramp) + self._render(a, n, H) * ramp
+        if out.shape[1] == 2:
+            if gains != self._fed_gains:
+                g0, g1 = np.asarray(self._fed_gains, np.float32), np.asarray(gains, np.float32)
+                out *= g0 + (g1 - g0) * ramp
+            elif gains != (1.0, 1.0):
+                out *= np.asarray(gains, np.float32)
+        self._fed_H, self._fed_gains = H, gains
+        self._feed_pos = a + n
+        pcm = np.clip(out, -32768, 32767).astype(np.int16)
+        self._fed.append((a, pcm))
+        return pygame.sndarray.make_sound(pcm)
+
+    def _feed(self):
+        """Keep one chunk queued behind the one playing (call with _feed_lock held)."""
+        if not self._feeding or self.raw is None or self._feed_pos >= len(self.raw):
+            return
+        if not self.channel.get_busy():
+            self.channel.play(self._make_chunk())
+        elif self.channel.get_queue() is None:
+            self.channel.queue(self._make_chunk())
+
+    def _feeder(self):
+        while True:
+            time.sleep(0.01)
+            with self._feed_lock:
+                try:
+                    self._feed()
+                except pygame.error:
+                    pass
 
     # ------------------------------------------------------------ transport
     def play(self):
@@ -146,12 +203,15 @@ class Engine:
             self._stop_local()
             self.remote.load(self._cast_source(pos), self.title or "TuxAmp")
         elif self.mode == "sound":
-            arr = self.pcm if self.pcm is not None else self.raw
-            i = int(pos * self.rate)
-            snd = pygame.sndarray.make_sound(np.ascontiguousarray(arr[i:]))
-            self.channel.stop()
-            self.channel.play(snd)
-            self._apply_volume()
+            with self._feed_lock:
+                self.channel.stop()
+                self._fed.clear()
+                self._feed_pos = min(int(pos * self.rate), len(self.raw))
+                self._fed_H, self._fed_gains = self._H, self._gains()
+                self._feeding = True
+                self._apply_volume()
+                self._feed()                 # first chunk plays now,
+                self._feed()                 # the second is queued behind it
         elif self.mode == "music":
             pygame.mixer.music.play(start=pos)
             self._apply_volume()
@@ -204,7 +264,9 @@ class Engine:
             self._start = pos
 
     def _stop_local(self):
-        self.channel.stop()
+        with self._feed_lock:
+            self._feeding = False
+            self.channel.stop()
         try:
             pygame.mixer.music.stop()
         except pygame.error:
@@ -235,50 +297,37 @@ class Engine:
         self._apply_volume()
 
     def _apply_volume(self):
-        v = self.volume
+        # Balance is applied to the samples (SDL_mixer forgets a channel's
+        # panning every time a chunk ends); the channel volume persists.
         if self.mode == "music":
-            pygame.mixer.music.set_volume(v)
-            return
-        left = v * min(1.0, 1.0 - self.balance)
-        right = v * min(1.0, 1.0 + self.balance)
-        self.channel.set_volume(left, right)
+            pygame.mixer.music.set_volume(self.volume)
+        else:
+            self.channel.set_volume(self.volume)
 
     def set_eq(self, on, preamp, bands):
+        """New EQ settings. Local playback picks them up with the next chunk."""
         self.eq_on = on
         self.preamp = preamp
         self.bands = list(bands)
-        # debounce: recompute shortly after the user stops dragging
-        self._eq_due = time.monotonic() + 0.25
-
-    def _start_eq_job(self):
-        self._eq_gen += 1
-        gen = self._eq_gen
-        load_gen = self._load_gen
-        raw = self.raw
-        fir = self._eq_params()
-        if fir is None:
-            with self._lock:
-                self._eq_pending = {"gen": gen, "load": load_gen, "pcm": None}
-            return
-
-        def job():
-            pcm = _apply_fir(raw, fir, lambda: gen != self._eq_gen)
-            if pcm is None:
-                return
-            with self._lock:
-                if gen == self._eq_gen:
-                    self._eq_pending = {"gen": gen, "load": load_gen, "pcm": pcm}
-
-        threading.Thread(target=job, daemon=True).start()
+        self._H = self._eq_spectrum()
+        if self.remote is not None:
+            # a cast device has already fetched audio far ahead: re-send it
+            # from the current spot once the slider has stopped moving
+            self._eq_due = time.monotonic() + 0.6
 
     # ------------------------------------------------------------ casting
-    def _balance_gains(self):
-        return min(1.0, 1.0 - self.balance), min(1.0, 1.0 + self.balance)
+    def _cast_render(self, a, n):
+        out = np.empty((n, self.raw.shape[1]), np.int16)
+        H = self._H
+        for i in range(0, n, CHUNK):
+            k = min(CHUNK, n - i)
+            out[i:i + k] = np.clip(self._render(a + i, k, H), -32768, 32767)
+        return out
 
     def _cast_source(self, pos):
         if self.mode == "sound":
-            arr = self.pcm if self.pcm is not None else self.raw
-            return cast.PcmSource(arr, self.rate, int(pos * self.rate), self._balance_gains)
+            return cast.PcmSource(self.raw, self.rate, int(pos * self.rate), self._gains,
+                                  render=self._cast_render)
         return cast.FileSource(self.path, pos, self.duration)
 
     def start_cast(self, session):
@@ -306,14 +355,24 @@ class Engine:
                 self.pause()
 
     # ------------------------------------------------------------ visualizer
+    def _played(self, i, n):
+        """Frames [i, i+n) as heard (EQ applied), or None near the end."""
+        if i + n > len(self.raw):
+            return None
+        seg = self.raw[i:i + n].copy()
+        if self.remote is None:
+            for a, pcm in list(self._fed):          # use the EQ'd chunks where we have them
+                lo, hi = max(i, a), min(i + n, a + len(pcm))
+                if hi > lo:
+                    seg[lo - i:hi - i] = pcm[lo - a:hi - a]
+        return seg
+
     def samples(self, n=1024):
         """Return a (n,) float array (mono, -1..1) at the playhead, or None."""
         if self.mode != "sound" or self.state != "playing":
             return None
-        arr = self.pcm if self.pcm is not None else self.raw
-        i = int(self.position() * self.rate)
-        seg = arr[i:i + n]
-        if len(seg) < n:
+        seg = self._played(int(self.position() * self.rate), n)
+        if seg is None:
             return None
         return seg.mean(axis=1) / 32768.0
 
@@ -321,10 +380,8 @@ class Engine:
         """Return a (n, 2) float32 array (-1..1) at the playhead, or None."""
         if self.mode != "sound" or self.state != "playing":
             return None
-        arr = self.pcm if self.pcm is not None else self.raw
-        i = int(self.position() * self.rate)
-        seg = arr[i:i + n]
-        if len(seg) < n:
+        seg = self._played(int(self.position() * self.rate), n)
+        if seg is None:
             return None
         if seg.shape[1] == 1:
             seg = np.repeat(seg, 2, axis=1)
@@ -336,13 +393,11 @@ class Engine:
         events = []
         with self._lock:
             res, self._pending = self._pending, None
-            eqres, self._eq_pending = self._eq_pending, None
         if res is not None and res["gen"] == self._load_gen:
             self.loading = False
             if "raw" in res:
                 self.mode = "sound"
                 self.raw = res["raw"]
-                self.pcm = res.get("pcm")
                 self.duration = len(self.raw) / self.rate
             else:
                 try:
@@ -358,16 +413,13 @@ class Engine:
                     self._start_at(0.0)
         if self._eq_due is not None and time.monotonic() >= self._eq_due:
             self._eq_due = None
-            if self.mode == "sound" and self.raw is not None:
-                self._start_eq_job()
-        if eqres is not None and eqres["load"] == self._load_gen and self.mode == "sound":
-            self.pcm = eqres["pcm"]
-            if self.state == "playing":
-                self._start_at(self.position())
-            elif self.state == "paused":
-                p = self._pause_pos
-                self._start_at(p)
-                self.pause()
+            if self.remote is not None and self.mode == "sound":
+                if self.state == "playing":
+                    self._start_at(self.position())
+                elif self.state == "paused":
+                    p = self._pause_pos
+                    self._start_at(p)
+                    self.pause()
         if self.remote is not None:
             r = self.remote
             if r.state == "error":
@@ -379,9 +431,14 @@ class Engine:
                 self.state = "stopped"          # stopped from the device itself
                 self._start = 0.0
         elif self.state == "playing":
-            if self.mode == "sound" and not self.channel.get_busy():
-                self.state = "stopped"
-                events.append("ended")
+            if self.mode == "sound":
+                with self._feed_lock:
+                    done = self._feed_pos >= len(self.raw) and not self.channel.get_busy()
+                    if done:
+                        self._feeding = False
+                if done:
+                    self.state = "stopped"
+                    events.append("ended")
             elif self.mode == "music" and not pygame.mixer.music.get_busy():
                 self.state = "stopped"
                 events.append("ended")

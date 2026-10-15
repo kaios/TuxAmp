@@ -2,6 +2,28 @@
 
 Author: Shawn Rapaz. Coded with the help of Claude AI (Anthropic).
 
+## v0.1.4 alpha (2026-10-15)
+
+### Moving the preamp or an EQ slider made the music pause
+- **Symptom:** sliding the preamp up or down (or any EQ band) briefly stopped the
+  music, and it could happen again and again while you kept adjusting the slider.
+- **Cause:** every EQ change re-filtered the *whole song* in the background and then
+  stopped and restarted playback with the new version. Each restart dropped the sound
+  for a moment while the sound card refilled, and could skip audio. A song in memory
+  was also stored twice (with and without the EQ).
+- **Fix:** TuxAmp now plays songs in short pieces (about 93 ms) and applies the EQ
+  and preamp to each piece just before it is queued. A slider change is heard within
+  a fraction of a second, cross-faded from the old setting so it never clicks, and
+  playback is never stopped or restarted. Balance works the same way. While casting,
+  the change is sent to the device once you let go of the slider (a cast device
+  buffers ahead, so it needs the stream re-sent).
+- **Tested:** recorded TuxAmp's real audio output while dragging the preamp in six
+  steps with pauses, like a real drag. The old version restarted playback twice
+  (two jumps in the waveform); the new one played straight through with no gaps or
+  jumps, and each step faded to exactly the expected level. The new live EQ matches
+  the old whole-song EQ to within 1 sample unit. The slowest main-loop frame went
+  from 15 ms to 4 ms.
+
 ## v0.1.3 alpha (2026-10-15)
 
 No bug fixes in this release. It adds a Cast button to the main window.

@@ -315,8 +315,9 @@ class PcmSource:
     """A WAV stream of decoded audio, starting at frame `start`."""
     mime, ext = "audio/wav", "wav"
 
-    def __init__(self, pcm, rate, start, gains=None):
+    def __init__(self, pcm, rate, start, gains=None, render=None):
         self.pcm, self.rate = pcm, rate
+        self.render = render                # (first frame, count) -> int16 frames, e.g. with EQ
         self.ch = pcm.shape[1]
         self.start = max(0, min(start, len(pcm)))
         bpf = self.ch * 2
@@ -342,7 +343,10 @@ class PcmSource:
         bpf = self.ch * 2
         d = off - 44
         f0, f1 = d // bpf, min(self.frames, -(-(d + n) // bpf))
-        seg = self.pcm[self.start + f0:self.start + f1]
+        if self.render is not None:
+            seg = self.render(self.start + f0, f1 - f0)
+        else:
+            seg = self.pcm[self.start + f0:self.start + f1]
         g = self.gains() if self.gains else None
         if g and self.ch == 2 and tuple(g) != (1.0, 1.0):
             seg = (seg.astype(np.float32) * np.asarray(g, np.float32)).astype(np.int16)

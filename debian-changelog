@@ -1,3 +1,15 @@
+tuxamp (0.1.4~alpha) unstable; urgency=medium
+
+  * Fixed: moving the preamp or an EQ slider made the music pause / skip.
+    The EQ is now applied live, in short chunks just ahead of the playhead,
+    and changes are cross-faded in within a fraction of a second.
+  * Balance changes are also smooth now, and the visualizers show the
+    EQ'd sound.
+  * While casting, an EQ change is sent once the slider is let go of.
+  * README: documents the smooth EQ.
+
+ -- Shawn Rapaz <shawnrapaz@gmail.com>  Thu, 15 Oct 2026 13:16:24 +0900
+
 tuxamp (0.1.3~alpha) unstable; urgency=medium
 
   * New Cast button on the main window, next to EQ and PL: opens the list

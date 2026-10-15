@@ -5,10 +5,10 @@ the 10-band graphic equalizer, and the playlist editor, all drawn pixel-for-pixe
 Winamp's native 275px width, and smoothly zoomable to any size. It can also
 stream your music to Chromecast, Google/Nest speakers and DLNA smart TVs on your network.
 
-**What's new in v0.1.3:** a **Cast button** on the main window, next to EQ and PL. Click
-it, pick a speaker or TV, and TuxAmp streams there while you keep using its controls.
-Its light is on while casting and blinks while it connects. See
-[Casting / streaming to smart devices](#casting--streaming-to-smart-devices).
+**What's new in v0.1.4:** smooth equalizer. Moving the preamp or any EQ slider now
+changes the sound live, within a fraction of a second, with no pause or skip in the
+music. (v0.1.3 added the **Cast button** next to EQ and PL for streaming to smart
+devices; see [Casting / streaming to smart devices](#casting--streaming-to-smart-devices).)
 
 
 ## Run
@@ -35,7 +35,9 @@ MOD/XM/IT/S3M**, and MIDI (needs a soundfont/timidity). Playlists: **M3U/M3U8/PL
 - Spectrum analyzer with falling peaks, or an oscilloscope. Click the visualizer to switch modes.
 - Seek bar, volume, and stereo balance
 - Working 10-band EQ with preamp, a response-curve display, and the classic presets
-  (Rock, Pop, Dance, Full Bass, ...)
+  (Rock, Pop, Dance, Full Bass, ...). The EQ is applied live while the music plays, so
+  dragging the preamp or a band slider is heard straight away, without any pause, and
+  the visualizers show the EQ'd sound.
 - **TuxDrop full-screen visualizer**, in the spirit of MilkDrop / AVS: feedback-warp
   effects, beat detection, 9 presets that cycle automatically
   (Hyperspace Tunnel, Black Hole Bloom, Kaleidoscope Dreams, Neon Rain, Plasma Pulse,
@@ -107,7 +109,9 @@ keep controlling everything from TuxAmp.
   moves on to the next track by itself.
 - **Volume slider:** sets the device's own volume. TuxAmp only changes it once you move
   the slider, so starting a cast never makes the device suddenly louder or quieter.
-- **Equalizer and balance** are applied to what the device plays.
+- **Equalizer and balance** are applied to what the device plays. Because a cast device
+  buffers ahead, an EQ change is sent once you let go of the slider; expect a second or
+  two of buffering on the device.
 - **Visualizers** (the small one and TuxDrop) stay in time with the device.
 - **Every format TuxAmp plays can be cast**, including FLAC, Opus, OGG and tracker
   modules, because TuxAmp sends the decoded audio, not the original file.
@@ -128,15 +132,15 @@ needed; everything stays on your local network.
 - **Firewall:** the device downloads the music from your computer on **TCP port 47900**.
   If you use a firewall (for example `ufw`), allow it from your network:
   `sudo ufw allow from 192.168.0.0/16 to any port 47900 proto tcp`
-- **Seeking or changing the EQ** restarts the stream, so expect a second or two of
-  buffering on the device.
+- **Seeking, or letting go of an EQ slider,** restarts the stream to the device, so
+  expect a second or two of buffering there. (On your computer the EQ changes smoothly.)
 - **Casting takes over** whatever the device was playing.
 - If the device stops answering, TuxAmp shows *CAST FAILED* and carries on playing on
   your computer.
 
 ## Credits
 
-TuxAmp v0.1.3 alpha, released 2026-10-15, by **Shawn Rapaz**.
+TuxAmp v0.1.4 alpha, released 2026-10-15, by **Shawn Rapaz**.
 See `BUGFIXES.md` for what each release fixed.
 Coded with the help of Claude AI (Anthropic).
 
@@ -146,5 +150,5 @@ it contains no Winamp code or artwork. See `CREDITS` for bundled third-party sof
 ## Building the .deb
 
 ```sh
-./build-deb.sh      # -> tuxamp_0.1.3-alpha_amd64.deb (needs PyInstaller, pygame, numpy)
+./build-deb.sh      # -> tuxamp_0.1.4-alpha_amd64.deb (needs PyInstaller, pygame, numpy)
 ```
