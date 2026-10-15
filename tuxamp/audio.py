@@ -5,11 +5,11 @@ which gives us sample-accurate seeking, stereo balance, a 10-band EQ and
 real sample data for the visualizer.  Formats that cannot be decoded into a
 Sound (MIDI, some trackers) fall back to streaming via mixer.music.
 
-Decoded tracks are played in short chunks (about 93 ms) that a feeder thread
+Decoded tracks are played in short chunks (about 23 ms) that a feeder thread
 queues on the mixer channel just ahead of the playhead. The EQ (with its
 preamp) and the balance are applied to each chunk as it is made, so moving a
-slider takes effect within a fraction of a second, cross-faded from the old
-setting, without ever stopping or restarting playback.
+slider is heard within about 0.1 s, faded in over ~12 ms so it never clicks,
+without ever stopping or restarting playback.
 
 While casting (self.remote is a cast.CastSession) the device plays the audio
 and its position drives the clock, so the time display, seek bar and
@@ -17,6 +17,7 @@ visualizers follow what the device is playing.
 """
 
 import collections
+import sys
 import threading
 import time
 
@@ -27,8 +28,10 @@ from . import cast
 
 EQ_FREQS = [60, 170, 310, 600, 1000, 3000, 6000, 12000, 14000, 16000]
 NTAPS = 4096                   # EQ filter length
-CHUNK = 4096                   # frames per queued chunk (~93 ms at 44.1 kHz)
+CHUNK = 1024                   # frames per queued chunk (~23 ms at 44.1 kHz)
 NFFT = 8192                    # FFT size for one chunk: >= CHUNK + NTAPS - 1
+BUFFER = 2048                  # sound card buffer (frames)
+FADE = 512                     # an EQ / balance change fades in over this many frames
 
 
 def _design_eq_fir(rate, preamp_db, bands_db, ntaps=NTAPS):
@@ -57,7 +60,10 @@ def _filter(raw, a, n, H):
 
 class Engine:
     def __init__(self):
-        pygame.mixer.pre_init(44100, -16, 2, 2048)
+        # let the feeder thread in quickly even while the main thread is busy
+        # (e.g. drawing the visualizer), so the next chunk is always queued in time
+        sys.setswitchinterval(0.001)
+        pygame.mixer.pre_init(44100, -16, 2, BUFFER)
         pygame.mixer.init()
         pygame.mixer.set_num_channels(2)
         self.rate, _, self.nch = pygame.mixer.get_init()
@@ -95,7 +101,10 @@ class Engine:
         self._feed_pos = 0       # next frame to queue
         self._fed_H = None       # filter / balance used for the last chunk queued,
         self._fed_gains = (1.0, 1.0)   # so a change can be cross-faded
-        self._fed = collections.deque(maxlen=6)   # (start frame, chunk) for the visualizers
+        self._fed = collections.deque(maxlen=10)  # (start frame, chunk) for the visualizers
+        self._idle_seen = False  # the channel looked empty at the previous check
+        self.underruns = 0       # times the feeder fell behind (for testing)
+        self._cast_H = None      # EQ bands only: while casting, the preamp is the device volume
         threading.Thread(target=self._feeder, daemon=True, name="audio-feed").start()
 
     # ------------------------------------------------------------ loading
@@ -128,10 +137,11 @@ class Engine:
             if gen == self._load_gen:
                 self._pending = result
 
-    def _eq_spectrum(self):
-        if not self.eq_on or (self.preamp == 0 and not any(self.bands)):
+    def _eq_spectrum(self, preamp=True):
+        pre = self.preamp if preamp else 0.0
+        if not self.eq_on or (pre == 0 and not any(self.bands)):
             return None
-        h = _design_eq_fir(self.rate, self.preamp, self.bands)
+        h = _design_eq_fir(self.rate, pre, self.bands)
         return np.fft.rfft(h, NFFT)[:, None]
 
     # ------------------------------------------------------------ chunked playback
@@ -150,7 +160,7 @@ class Engine:
         a = self._feed_pos
         n = min(CHUNK, len(self.raw) - a)
         H, gains = self._H, self._gains()
-        ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)[:, None]
+        ramp = np.minimum(np.arange(n, dtype=np.float32) / FADE, 1.0)[:, None]
         if H is self._fed_H:
             out = self._render(a, n, H)
         else:
@@ -167,18 +177,33 @@ class Engine:
         self._fed.append((a, pcm))
         return pygame.sndarray.make_sound(pcm)
 
-    def _feed(self):
+    def _feed(self, start=False):
         """Keep one chunk queued behind the one playing (call with _feed_lock held)."""
         if not self._feeding or self.raw is None or self._feed_pos >= len(self.raw):
             return
-        if not self.channel.get_busy():
+        if start:
             self.channel.play(self._make_chunk())
-        elif self.channel.get_queue() is None:
+            return
+        busy, queued = self.channel.get_busy(), self.channel.get_queue() is not None
+        if busy and not queued:
             self.channel.queue(self._make_chunk())
+            self._idle_seen = False
+        elif not busy and not queued:
+            # When a chunk ends, the mixer reports the channel idle for a moment
+            # while it starts the queued one. Only an idle channel seen twice in
+            # a row has really run dry; restarting it earlier would skip a chunk.
+            if self._idle_seen:
+                self.underruns += 1
+                self.channel.play(self._make_chunk())
+                self._idle_seen = False
+            else:
+                self._idle_seen = True
+        else:
+            self._idle_seen = False
 
     def _feeder(self):
         while True:
-            time.sleep(0.01)
+            time.sleep(0.005)
             with self._feed_lock:
                 try:
                     self._feed()
@@ -209,8 +234,9 @@ class Engine:
                 self._feed_pos = min(int(pos * self.rate), len(self.raw))
                 self._fed_H, self._fed_gains = self._H, self._gains()
                 self._feeding = True
+                self._idle_seen = False
                 self._apply_volume()
-                self._feed()                 # first chunk plays now,
+                self._feed(start=True)       # first chunk plays now,
                 self._feed()                 # the second is queued behind it
         elif self.mode == "music":
             pygame.mixer.music.play(start=pos)
@@ -290,7 +316,7 @@ class Engine:
         self.volume = max(0.0, min(1.0, v))
         self._apply_volume()
         if self.remote is not None:
-            self.remote.set_volume(self.volume)    # the device's own volume
+            self.remote.set_volume(self.remote_volume())    # the device's own volume
 
     def set_balance(self, b):
         self.balance = max(-1.0, min(1.0, b))
@@ -306,19 +332,34 @@ class Engine:
 
     def set_eq(self, on, preamp, bands):
         """New EQ settings. Local playback picks them up with the next chunk."""
+        old = (self.eq_on, self.preamp, list(self.bands))
         self.eq_on = on
         self.preamp = preamp
         self.bands = list(bands)
         self._H = self._eq_spectrum()
+        self._cast_H = self._eq_spectrum(preamp=False)
         if self.remote is not None:
-            # a cast device has already fetched audio far ahead: re-send it
-            # from the current spot once the slider has stopped moving
-            self._eq_due = time.monotonic() + 0.6
+            if (old[0], old[1]) != (on, preamp):
+                # the preamp acts on the device's volume: heard right away
+                self.remote.set_volume(self.remote_volume())
+            def bands_heard(on, bands):          # what the device's stream depends on
+                return list(bands) if on and any(bands) else None
+            if bands_heard(old[0], old[2]) != bands_heard(on, self.bands):
+                # a cast device has already fetched audio far ahead: re-send it
+                # from the current spot once the slider has stopped moving
+                self._eq_due = time.monotonic() + 0.6
+
+    def remote_volume(self):
+        """Volume for a cast device: TuxAmp's volume with the preamp applied."""
+        v = self.volume
+        if self.eq_on:
+            v *= 10.0 ** (self.preamp / 20.0)
+        return max(0.0, min(1.0, v))
 
     # ------------------------------------------------------------ casting
     def _cast_render(self, a, n):
         out = np.empty((n, self.raw.shape[1]), np.int16)
-        H = self._H
+        H = self._cast_H
         for i in range(0, n, CHUNK):
             k = min(CHUNK, n - i)
             out[i:i + k] = np.clip(self._render(a + i, k, H), -32768, 32767)
@@ -337,6 +378,8 @@ class Engine:
             self.remote.close()
         self._stop_local()
         self.remote = session
+        if self.eq_on and self.preamp:
+            session.set_volume(self.remote_volume())
         if self.mode is not None and state != "stopped":
             self._start_at(pos)
             if state == "paused":

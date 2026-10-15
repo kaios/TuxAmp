@@ -16,7 +16,7 @@ from .audio import Engine
 from .meta import is_audio, read_info, display_title
 from .widgets import PopupMenu, FileBrowser, get_font, PLAYLIST_EXTS
 
-VERSION = "v0.1.4 alpha"
+VERSION = "v0.1.5 alpha"
 AUTHOR = "Shawn Rapaz"
 RELEASE_DATE = "2026-10-15"
 APP_TITLE = "TuxAmp"
@@ -1181,6 +1181,10 @@ class TuxAmp:
             if abs(db) < 0.7:
                 db = 0.0
             db = round(db, 1)
+            if not self.engine.eq_on:
+                # the sliders only act while the EQ is on, so moving one turns it on
+                self.set_eq_values(on=True)
+                self.flash("EQUALIZER: ON", 1.5)
             if sid == "preamp":
                 self.set_eq_values(preamp=db)
                 self.flash(f"PREAMP: {db:+.1f} DB", 1)

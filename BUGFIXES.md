@@ -2,6 +2,47 @@
 
 Author: Shawn Rapaz. Coded with the help of Claude AI (Anthropic).
 
+## v0.1.5 alpha (2026-10-15)
+
+### The preamp still wasn't real time, and paused on release
+- **Symptom:** dragging the preamp up or down didn't change the sound while dragging;
+  the change (with a pause) came only after letting go.
+- **What we found:** testing the real slider, with the real audio output recorded,
+  showed four separate causes:
+  1. **EQ off:** the preamp is part of the equalizer, so while the EQ was switched off
+     the preamp did nothing at all, however far it was moved. (In v0.1.3 and earlier,
+     letting go then also restarted playback: the pause.)
+  2. **Lag:** with the EQ on, v0.1.4 followed the slider about 0.2 s behind, because the
+     sound was prepared in 93 ms pieces with one more piece waiting behind it.
+  3. **Skipped audio:** at the moment one piece ended, the mixer briefly reported the
+     channel as empty while it started the next piece. If TuxAmp checked at that exact
+     moment, it started another piece on top, so one piece was skipped (a click). It was
+     rare, but more likely while the EQ was changing.
+  4. **Casting:** an EQ change was only sent to the device on release, by re-sending the
+     stream, which made the device pause and buffer.
+- **Fix:**
+  1. Grabbing the preamp or any EQ slider while the EQ is off switches it on (the
+     display shows "EQUALIZER: ON").
+  2. Pieces are now 23 ms, and changes fade in over 12 ms. TuxAmp also lets its audio
+     thread run more often (every 1 ms), so the next piece is always ready in time,
+     even with the full-screen visualizer running.
+  3. The channel only counts as empty if it looks empty on two checks in a row.
+  4. While casting, the preamp now changes the device's volume, which happens at once
+     with no pause. Only EQ *band* changes still re-send the stream on release.
+- **Tested:**
+  - Dragged the real preamp slider (down 12 dB, hold, up 24 dB) with the EQ on and
+    with it off, recording the real audio output: the level followed the slider the
+    whole way, with no jumps, clicks or underruns, and no pause on release.
+  - Delay from a slider move to the change being heard: 76 ms on average (110 ms at
+    most), down from about 200 ms.
+  - 8 seconds of preamp sweeping with the full-screen visualizer drawing 60 frames a
+    second: no underruns and no gaps (smaller 512-frame pieces also passed, so there
+    is at least a 2x safety margin).
+  - Casting (simulated Chromecast and DLNA TV): dragging the preamp set the device's
+    volume within 20 ms and did not re-send the stream; all 15 casting checks pass.
+  - Pause, seek, balance, next track, EQ accuracy (matches the old EQ within 1 sample
+    unit) all pass.
+
 ## v0.1.4 alpha (2026-10-15)
 
 ### Moving the preamp or an EQ slider made the music pause

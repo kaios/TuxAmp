@@ -1010,10 +1010,12 @@ class CastSession:
                     except (OSError, CastError):
                         pass
                 return
-            # only the newest load matters; commands before it are out of date
+            # only the newest load matters, and only the newest volume:
+            # commands before them are out of date
             last = max((i for i, c in enumerate(cmds) if c[0] in ("load", "stop")), default=0)
-            vols = [c for c in cmds[:last] if c[0] == "volume"][-1:]
-            for c in vols + cmds[last:]:
+            vols = [c for c in cmds if c[0] == "volume"][-1:]
+            cmds = [c for c in cmds[last:] if c[0] != "volume"]
+            for c in vols + cmds:
                 if ctl is None or self.state == "error":
                     break
                 try:

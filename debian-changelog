@@ -1,3 +1,17 @@
+tuxamp (0.1.5~alpha) unstable; urgency=medium
+
+  * Fixed: the preamp was not real time. The sound now follows the preamp
+    and EQ sliders while they are dragged (about 0.1 s behind, was about
+    0.2 s), and nothing pauses on release.
+  * Fixed: the preamp did nothing while the EQ was off; grabbing a slider
+    now switches the EQ on.
+  * Fixed: a rare skipped piece of audio (a click) while the EQ changed.
+  * Casting: the preamp now changes the device's volume instantly instead
+    of re-sending the stream (which paused it) when the slider was let go.
+  * Documents updated (README, BUGFIXES.md).
+
+ -- Shawn Rapaz <shawnrapaz@gmail.com>  Thu, 15 Oct 2026 13:38:21 +0900
+
 tuxamp (0.1.4~alpha) unstable; urgency=medium
 
   * Fixed: moving the preamp or an EQ slider made the music pause / skip.
