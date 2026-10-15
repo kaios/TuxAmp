@@ -11,7 +11,7 @@ import queue
 import numpy as np
 import pygame
 
-from . import font, icon, sdlext, skin
+from . import cast, font, icon, sdlext, skin
 from .audio import Engine
 from .meta import is_audio, read_info, display_title
 from .widgets import PopupMenu, FileBrowser, get_font, PLAYLIST_EXTS
@@ -139,6 +139,13 @@ class TuxAmp:
         self.vis_peak_vel = np.zeros(19)
         self.track_info = {}
         self.error_count = 0
+        self.cast_server = None
+        self.cast_devices = []       # found by the last network search
+        self.cast_searching = False
+        self.cast_found_at = None
+        self._cast_result = None
+        self._cast_menu = None
+        self._cast_menu_pos = (0, 0)
 
         self._open_window()
         self.pl_font = None
@@ -432,6 +439,7 @@ class TuxAmp:
             return
         self.current = i
         self.track_info = {}
+        self.engine.title = self.playlist[i].title
         self.engine.load(self.playlist[i].path, autoplay=True)
         self.marquee_off = 0
         self._ensure_pl_visible(i)
@@ -590,6 +598,8 @@ class TuxAmp:
             ("Visualization: Oscilloscope", lambda: setattr(self, "vis_mode", 1), self.vis_mode == 1),
             ("Visualization: Off", lambda: setattr(self, "vis_mode", 2), self.vis_mode == 2),
             None,
+            ("Cast to device...     Ctrl+Shift+C", self.cast_menu, e.remote is not None),
+            None,
             ("Size 1x", lambda: self.set_scale(1), self.scale == 1),
             ("Size 2x", lambda: self.set_scale(2), self.scale == 2),
             ("Size 3x", lambda: self.set_scale(3), self.scale == 3),
@@ -607,6 +617,74 @@ class TuxAmp:
                                                  "CODED WITH CLAUDE AI", 9)),
             ("Exit", self.quit),
         ])
+
+    # ================================================================ casting
+    def cast_menu(self, pos=None):
+        """The Cast menu: this computer plus the devices found on the network."""
+        if pos is None:
+            pos = pygame.mouse.get_pos()
+        self._cast_menu_pos = pos
+        if not self.cast_searching and (self.cast_found_at is None
+                                        or time.monotonic() - self.cast_found_at > 30):
+            self.cast_search()
+        self._show_cast_menu()
+
+    def _show_cast_menu(self):
+        r = self.engine.remote
+        devs = list(self.cast_devices)
+        if r is not None and all(d.key != r.device.key for d in devs):
+            devs.insert(0, r.device)
+        items = [("Play on:", None), None,
+                 ("This computer", self.cast_stop, r is None)]
+        for d in devs:
+            items.append((d.label, lambda d=d: self.cast_to(d), r is not None and r.device.key == d.key))
+        if self.cast_searching:
+            items.append(("Searching the network...", None))
+        elif not devs:
+            items.append(("No cast devices found", None))
+        items += [None, ("Search again", lambda: (self.cast_search(), self._show_cast_menu()))]
+        self.menu = PopupMenu(items, self._cast_menu_pos, self.screen.get_size(), self.scale)
+        self._cast_menu = self.menu
+
+    def cast_search(self):
+        if self.cast_searching:
+            return
+        self.cast_searching = True
+
+        def work():
+            try:
+                found = cast.discover(3.0)
+            except Exception:
+                found = []
+            self._cast_result = found
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cast_poll(self):
+        """Main loop: pick up search results and show them in the open menu."""
+        if self._cast_result is None:
+            return
+        self.cast_devices, self._cast_result = self._cast_result, None
+        self.cast_searching = False
+        self.cast_found_at = time.monotonic()
+        if self.menu is not None and self.menu is self._cast_menu:
+            hover = self.menu.hover
+            self._show_cast_menu()
+            self.menu.hover = hover
+
+    def cast_to(self, dev):
+        r = self.engine.remote
+        if r is not None and r.device.key == dev.key:
+            return
+        if self.cast_server is None:
+            self.cast_server = cast.MediaServer()
+        self.engine.start_cast(cast.CastSession(dev, self.cast_server))
+        self.flash(f"CASTING TO {dev.name.upper()}", 3)
+
+    def cast_stop(self):
+        if self.engine.remote is not None:
+            self.engine.stop_cast()
+            self.flash("PLAYING ON THIS COMPUTER", 3)
 
     def toggle_eq(self):
         self.show_eq = not self.show_eq
@@ -1141,6 +1219,8 @@ class TuxAmp:
             self.selected = set(range(len(self.playlist)))
         elif ctrl and k == pygame.K_q:
             self.quit()
+        elif ctrl and ev.mod & pygame.KMOD_SHIFT and k == pygame.K_c:
+            self.cast_menu()
         elif k == pygame.K_k:
             self.start_viz()
         elif k == pygame.K_z:
@@ -1327,6 +1407,14 @@ class TuxAmp:
             txt += f" ({fmt_time(dur)})"
         if self.engine.loading:
             txt = "LOADING... " + txt
+        r = self.engine.remote
+        if r is not None:
+            if r.state == "connecting":
+                txt = f"CONNECTING TO {r.name}...  " + txt
+            elif r.state == "loading" and self.engine.state == "playing":
+                txt = f"BUFFERING ON {r.name}...  " + txt
+            else:
+                txt = f"[CAST: {r.name}]  " + txt
         return txt, True
 
     def draw_main(self, s, oy):
@@ -1781,6 +1869,10 @@ class TuxAmp:
                     self.error_count += 1
                     if self.error_count < len(self.playlist):
                         self.next_track(manual=False)
+                elif evt == "casterror":
+                    msg = self.engine.remote.error
+                    self.engine.stop_cast()
+                    self.flash(f"CAST FAILED: {msg}  ***  PLAYING ON THIS COMPUTER".upper(), 8)
                 elif evt == "loaded":
                     self.error_count = 0
                     # pick up duration / format details for display
@@ -1793,6 +1885,7 @@ class TuxAmp:
                             t.info["duration"] = self.engine.duration
                         if self.viz:
                             self.viz.show("title", t.title, 5)
+            self._cast_poll()
             if self._global_drag():
                 self._poll_drag()
             self.marquee_off += 0.6
@@ -1805,4 +1898,6 @@ class TuxAmp:
                 clock.tick(60 if self._global_drag() else 30)
         self.save_config()
         self.engine.stop()
+        if self.engine.remote is not None:
+            self.engine.remote.close(wait=2.0)     # stop the device and let go of it
         pygame.quit()

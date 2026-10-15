@@ -4,6 +4,10 @@ Tracks are decoded fully into memory (numpy int16) in a background thread,
 which gives us sample-accurate seeking, stereo balance, a 10-band EQ and
 real sample data for the visualizer.  Formats that cannot be decoded into a
 Sound (MIDI, some trackers) fall back to streaming via mixer.music.
+
+While casting (self.remote is a cast.CastSession) the device plays the audio
+and its position drives the clock, so the time display, seek bar and
+visualizers follow what the device is playing.
 """
 
 import threading
@@ -11,6 +15,8 @@ import time
 
 import numpy as np
 import pygame
+
+from . import cast
 
 EQ_FREQS = [60, 170, 310, 600, 1000, 3000, 6000, 12000, 14000, 16000]
 
@@ -79,6 +85,8 @@ class Engine:
         self._eq_pending = None
         self._eq_due = None
         self._autoplay = False
+        self.remote = None       # cast.CastSession while casting
+        self.title = ""          # shown on the cast device
 
     # ------------------------------------------------------------ loading
     def load(self, path, autoplay=True):
@@ -134,7 +142,10 @@ class Engine:
 
     def _start_at(self, pos):
         pos = max(0.0, min(pos, max(0.0, self.duration - 0.05))) if self.duration else max(0.0, pos)
-        if self.mode == "sound":
+        if self.remote is not None:
+            self._stop_local()
+            self.remote.load(self._cast_source(pos), self.title or "TuxAmp")
+        elif self.mode == "sound":
             arr = self.pcm if self.pcm is not None else self.raw
             i = int(pos * self.rate)
             snd = pygame.sndarray.make_sound(np.ascontiguousarray(arr[i:]))
@@ -151,7 +162,9 @@ class Engine:
     def pause(self):
         if self.state == "playing":
             self._pause_pos = self.position()
-            if self.mode == "sound":
+            if self.remote is not None:
+                self.remote.pause()
+            elif self.mode == "sound":
                 self.channel.pause()
             else:
                 pygame.mixer.music.pause()
@@ -162,7 +175,9 @@ class Engine:
     def unpause(self):
         if self.state != "paused":
             return
-        if self.mode == "sound":
+        if self.remote is not None:
+            self.remote.resume()
+        elif self.mode == "sound":
             self.channel.unpause()
         else:
             pygame.mixer.music.unpause()
@@ -171,11 +186,9 @@ class Engine:
         self.state = "playing"
 
     def stop(self):
-        self.channel.stop()
-        try:
-            pygame.mixer.music.stop()
-        except pygame.error:
-            pass
+        self._stop_local()
+        if self.remote is not None and self.state != "stopped":
+            self.remote.stop()
         self.state = "stopped"
         self._start = 0.0
 
@@ -190,8 +203,17 @@ class Engine:
         else:
             self._start = pos
 
+    def _stop_local(self):
+        self.channel.stop()
+        try:
+            pygame.mixer.music.stop()
+        except pygame.error:
+            pass
+
     def position(self):
-        if self.state == "playing":
+        if self.state == "playing" and self.remote is not None:
+            p = self.remote.position()
+        elif self.state == "playing":
             p = self._start + (time.monotonic() - self._t0)
         elif self.state == "paused":
             p = self._pause_pos
@@ -205,6 +227,8 @@ class Engine:
     def set_volume(self, v):
         self.volume = max(0.0, min(1.0, v))
         self._apply_volume()
+        if self.remote is not None:
+            self.remote.set_volume(self.volume)    # the device's own volume
 
     def set_balance(self, b):
         self.balance = max(-1.0, min(1.0, b))
@@ -246,6 +270,40 @@ class Engine:
                     self._eq_pending = {"gen": gen, "load": load_gen, "pcm": pcm}
 
         threading.Thread(target=job, daemon=True).start()
+
+    # ------------------------------------------------------------ casting
+    def _balance_gains(self):
+        return min(1.0, 1.0 - self.balance), min(1.0, 1.0 + self.balance)
+
+    def _cast_source(self, pos):
+        if self.mode == "sound":
+            arr = self.pcm if self.pcm is not None else self.raw
+            return cast.PcmSource(arr, self.rate, int(pos * self.rate), self._balance_gains)
+        return cast.FileSource(self.path, pos, self.duration)
+
+    def start_cast(self, session):
+        """Move playback to a cast device, carrying on from the same spot."""
+        pos, state = self.position(), self.state
+        if self.remote is not None:
+            self.remote.close()
+        self._stop_local()
+        self.remote = session
+        if self.mode is not None and state != "stopped":
+            self._start_at(pos)
+            if state == "paused":
+                self.pause()
+
+    def stop_cast(self, wait=0.0):
+        """Bring playback back to this computer, carrying on from the same spot."""
+        if self.remote is None:
+            return
+        pos, state = self.position(), self.state
+        self.remote.close(wait)
+        self.remote = None
+        if self.mode is not None and state != "stopped":
+            self._start_at(pos)
+            if state == "paused":
+                self.pause()
 
     # ------------------------------------------------------------ visualizer
     def samples(self, n=1024):
@@ -310,7 +368,17 @@ class Engine:
                 p = self._pause_pos
                 self._start_at(p)
                 self.pause()
-        if self.state == "playing":
+        if self.remote is not None:
+            r = self.remote
+            if r.state == "error":
+                events.append("casterror")
+            elif self.state == "playing" and r.state == "finished":
+                self.state = "stopped"
+                events.append("ended")
+            elif self.state == "playing" and r.state == "stopped":
+                self.state = "stopped"          # stopped from the device itself
+                self._start = 0.0
+        elif self.state == "playing":
             if self.mode == "sound" and not self.channel.get_busy():
                 self.state = "stopped"
                 events.append("ended")

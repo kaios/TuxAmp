@@ -79,7 +79,8 @@ Description: TuxAmp (alpha) - Winamp-style music player for Linux
  display and spectrum analyzer, 10-band equalizer and playlist editor, all
  smoothly zoomable together. Includes TuxDrop, a full-screen,
  music-reactive visualizer in the spirit of Winamp's MilkDrop and AVS
- plugins.
+ plugins. Can cast to Chromecast / Google Cast and DLNA devices
+ (smart TVs, speakers) on the local network.
  Plays MP3, WAV, OGG, FLAC, Opus, AIFF and tracker module files.
  .
  Version v0.1.0 alpha, released 2026-10-14 by Shawn Rapaz.

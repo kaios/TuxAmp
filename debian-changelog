@@ -5,6 +5,9 @@ tuxamp (0.1.0~alpha) unstable; urgency=medium
     together by dragging the bottom-right corner.
   * TuxDrop: a full-screen, music-reactive visualizer with 9 presets, beat
     detection and automatic preset cycling.
+  * Cast to smart devices on the local network: Chromecast / Google Cast
+    (Chromecast, Google and Nest speakers, Android TV) and DLNA renderers
+    (smart TVs, Sonos, Kodi), with the EQ applied to the cast audio.
   * Icons: Tux the penguin holding a lightning bolt.
   * Startup voice: "TuxAmp, it really whips the penguin's ass!"
   * See BUGFIXES.md for the bugs fixed during development.
