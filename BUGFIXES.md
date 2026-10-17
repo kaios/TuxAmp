@@ -6,6 +6,9 @@ Every bug fixed so far, newest first. Details for each follow below.
 
 | Version | Fixed |
 |---|---|
+| v0.1.7 | Double-clicking the playing song restarted it (now pauses / resumes) |
+| v0.1.7 | 48 kHz radio stations: the decoded pieces drifted apart (found during development) |
+| v0.1.7 | Off-air SHOUTcast mirrors stopped a station from playing (found during development) |
 | v0.1.6 | EQ sliders and presets paused the music while casting |
 | v0.1.6 | EQ / balance changes on a cast device could click |
 | v0.1.5 | Preamp not real time; paused on release |
@@ -25,6 +28,68 @@ Every bug fixed so far, newest first. Details for each follow below.
 | v0.1.0 | Resizing could nudge the window |
 | v0.1.0 | Zooming could push the window off screen |
 | v0.1.0 | Visualizer leaving full screen kept the full-screen size |
+
+## v0.1.7 alpha (2026-10-17)
+
+New in this release: SHOUTcast / Icecast internet radio, with an **SC** button on the
+main window (see the README). The bugs below marked "found during development" were
+found and fixed while building it, before release.
+
+### Double-clicking the playing song in the playlist restarted it
+- **Symptom:** double-clicking the song that was already playing started it again
+  from the beginning.
+- **Fix:** double-clicking the song that is playing now pauses it, and
+  double-clicking it again resumes it from the same spot. Double-clicking any other
+  song (or the current one when it is stopped) plays it from the start, as before.
+  This also works while casting.
+- **Tested:** with real mouse clicks on the playlist rows, a double-click on the
+  playing song paused it (the position held still for a second), the next
+  double-click resumed it from the same spot rather than the start, double-clicking
+  another song played that song from the start, and double-clicking the stopped
+  current song played it.
+
+### 48 kHz radio stations: the decoded pieces drifted apart (found during development)
+- **Symptom:** in testing, MP3 stations broadcast at 48 kHz (many European stations)
+  had small jumps every half second.
+- **Cause:** TuxAmp decodes a station in pieces of about half a second. At 44.1 kHz the
+  pieces join exactly, but at 48 kHz the sound library also converts the sample rate,
+  and its real timing differs very slightly from the nominal one, so a cut point worked
+  out by arithmetic slipped by about 8 samples per piece.
+- **Fix:** each piece is decoded with a little overlap, and TuxAmp finds the exact join
+  by matching the overlapping audio, then blends over 64 samples.
+- **Tested:** 44.1 kHz stations decode bit-for-bit identical to decoding the whole
+  recording at once. For two 48 kHz stations the joins are as smooth as the music
+  around them (no join stood out from normal music on a click detector).
+
+### Off-air SHOUTcast mirrors stopped a station from playing (found during development)
+- **Symptom:** some stations from the SHOUTcast directory failed with "too many
+  redirects".
+- **Cause:** a directory station lists several mirror servers. When one is off the air,
+  SHOUTcast sends listeners to its web page instead of the audio, again and again.
+- **Fix:** a redirect to a web page counts as "not on the air", and TuxAmp moves on to
+  the station's next mirror (up to 12, within 25 seconds).
+
+- **Radio tested** (a simulated SHOUTcast server, plus real stations over the internet):
+  - The SC button opens the window; with no saved stations it shows the directory's
+    top 199 stations.
+  - Typing a station address and pressing Enter saved it and played it. The station's
+    name, the song titles, and 128 kbps / 44 kHz appeared in the display; the clock ran
+    in real time; the visualizer worked.
+  - Double-clicking the station in the playlist paused it (the time held still), and
+    double-clicking again resumed from the same spot.
+  - The station dropped the connection: TuxAmp reconnected and played on with no gap.
+  - Stop hung up; Play tuned in again. No underruns; the recorded audio had no gaps.
+  - Casting a station sent the station's own address to the device as a live stream;
+    stopping the cast tuned in again on the computer.
+  - A station that is down showed "CANNOT PLAY ...: CONNECTION REFUSED" and TuxAmp
+    stayed on it.
+  - Searching the real directory for "jazz" found 200 stations; SAVE kept one. The
+    first station in the results refused connections, and the second played.
+  - Real stations played: SHOUTcast (HUBU.FM, Antenne Bayern via the directory),
+    Icecast over https (NPO Radio 1, 48 kHz), and with ffmpeg also AAC+ (via the
+    directory), AAC (SomaFM) and SRF 1.
+  - Saved stations and station playlist entries survive a restart.
+  - All earlier tests (casting, EQ, local playback, double-click) still pass.
 
 ## v0.1.6 alpha (2026-10-15)
 

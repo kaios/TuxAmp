@@ -2,11 +2,11 @@
 # Builds a self-contained, compiled TuxAmp .deb (Python + pygame + numpy bundled
 # by PyInstaller, so the target machine needs no Python packages).
 #
-#   ./build-deb.sh            -> tuxamp_0.1.6-alpha_amd64.deb
+#   ./build-deb.sh            -> tuxamp_0.1.7-alpha_amd64.deb
 set -e
 
-VERSION="0.1.6~alpha"          # Debian version ("~" sorts the alpha before the final 0.1.6)
-FILE_VERSION="0.1.6-alpha"
+VERSION="0.1.7~alpha"          # Debian version ("~" sorts the alpha before the final 0.1.7)
+FILE_VERSION="0.1.7-alpha"
 ARCH="$(dpkg --print-architecture)"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$DIR/build"
@@ -72,6 +72,7 @@ Section: sound
 Priority: optional
 Architecture: $ARCH
 Depends: libc6 (>= 2.31)
+Recommends: ffmpeg
 Installed-Size: $SIZE_KB
 Maintainer: Shawn Rapaz <shawnrapaz@gmail.com>
 Description: TuxAmp (alpha) - Winamp-style music player for Linux
@@ -79,11 +80,12 @@ Description: TuxAmp (alpha) - Winamp-style music player for Linux
  display and spectrum analyzer, 10-band equalizer and playlist editor, all
  smoothly zoomable together. Includes TuxDrop, a full-screen,
  music-reactive visualizer in the spirit of Winamp's MilkDrop and AVS
- plugins. Can cast to Chromecast / Google Cast and DLNA devices
+ plugins. Plays SHOUTcast / Icecast internet radio, with the SHOUTcast
+ directory built in. Can cast to Chromecast / Google Cast and DLNA devices
  (smart TVs, speakers) on the local network.
  Plays MP3, WAV, OGG, FLAC, Opus, AIFF and tracker module files.
  .
- Version v0.1.6 alpha, released 2026-10-15 by Shawn Rapaz.
+ Version v0.1.7 alpha, released 2026-10-17 by Shawn Rapaz.
  Coded with the help of Claude AI (Anthropic).
  .
  Self-contained: bundles its own Python runtime, pygame and numpy.

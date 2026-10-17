@@ -4,6 +4,7 @@ import json
 import math
 import os
 import random
+import re
 import threading
 import time
 import queue
@@ -11,14 +12,14 @@ import queue
 import numpy as np
 import pygame
 
-from . import cast, font, icon, sdlext, skin
+from . import cast, font, icon, radio, sdlext, skin
 from .audio import Engine
 from .meta import is_audio, read_info, display_title
 from .widgets import PopupMenu, FileBrowser, get_font, PLAYLIST_EXTS
 
-VERSION = "v0.1.6 alpha"
+VERSION = "v0.1.7 alpha"
 AUTHOR = "Shawn Rapaz"
-RELEASE_DATE = "2026-10-15"
+RELEASE_DATE = "2026-10-17"
 APP_TITLE = "TuxAmp"
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "tuxamp")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -32,12 +33,23 @@ SIZE_GRIP = 10                 # bottom-right zoom grip on the main / EQ window
 MIN_SCALE, MAX_SCALE = 1.0, 6.0  # free zoom range of the bottom-right corner grip
 SNAP = 0.015                   # a zoom this close to a whole number snaps to it (pixel-perfect)
 
-# main window: volume / balance sliders and the CAST / EQ / PL buttons beside them
-VOL_R = (107, 57, 60, 13)
-BAL_R = (169, 57, 32, 13)
-CAST_R = (203, 58, 22, 12)
+# main window: volume / balance sliders and the CAST / SC / EQ / PL buttons beside them
+VOL_R = (107, 57, 46, 13)
+BAL_R = (155, 57, 28, 13)
+CAST_R = (184, 58, 21, 12)
+SCB_R = (205, 58, 20, 12)
 EQB_R = (225, 58, 20, 12)
 PLB_R = (245, 58, 20, 12)
+# SHOUTcast window
+SC_H = 116
+SC_ENTRY = (10, 18, 173, 12)
+SC_LIST = pygame.Rect(10, 33, 245, 66)
+SC_SCROLL = pygame.Rect(257, 33, 8, 66)
+SC_STATUS = (147, 102, 118, 11)
+SC_BUTTONS = [("search", (185, 18, 38, 12), "SEARCH"), ("addurl", (225, 18, 40, 12), "ADD URL"),
+              ("mine", (10, 102, 28, 11), "MINE"), ("top", (40, 102, 22, 11), "TOP"),
+              ("scplay", (64, 102, 27, 11), "PLAY"), ("save", (93, 102, 27, 11), "SAVE"),
+              ("del", (122, 102, 22, 11), "DEL")]
 # the Cast icon (a screen with radio waves from its corner), 11x8 pixels
 CAST_ICON = ["###########",
              "#.........#",
@@ -82,10 +94,14 @@ def fmt_time(sec):
 class Track:
     __slots__ = ("path", "info", "title")
 
-    def __init__(self, path):
+    def __init__(self, path, title=None):
         self.path = path
         self.info = None
-        self.title = os.path.splitext(os.path.basename(path))[0]
+        if radio.is_url(path):
+            self.info = {}            # a radio station: nothing to read from disk
+            self.title = title or path
+        else:
+            self.title = title or os.path.splitext(os.path.basename(path))[0]
 
     @property
     def duration(self):
@@ -107,6 +123,7 @@ class TuxAmp:
         self.scale = self._clamp_scale(scale or cfg.get("scale") or self._auto_scale())
         self.show_eq = cfg.get("show_eq", True)
         self.show_pl = cfg.get("show_pl", True)
+        self.show_sc = cfg.get("show_sc", False)
         self.shade = False
         self.shuffle = cfg.get("shuffle", False)
         self.repeat = cfg.get("repeat", False)
@@ -162,6 +179,21 @@ class TuxAmp:
         self._cast_result = None
         self._cast_menu = None
         self._cast_menu_pos = (0, 0)
+        # SHOUTcast window
+        radio.USER_AGENT = f"TuxAmp/{VERSION.split()[0].lstrip('v')}"
+        self.stations = [st for st in cfg.get("stations", []) if radio.is_url(st.get("url"))]
+        self.sc_view = "mine"        # mine | top | search
+        self.sc_items = list(self.stations)
+        self.sc_sel = None
+        self.sc_scroll = 0
+        self.sc_text = ""            # the entry box
+        self.sc_cursor = 0
+        self.sc_typing = False
+        self.sc_status = ""
+        self.sc_busy = False
+        self._sc_result = None
+        self._sc_last_click = (None, 0)
+        self._sc_query = ""
 
         self._open_window()
         self.pl_font = None
@@ -169,14 +201,18 @@ class TuxAmp:
         self.bg_main = self._render_main_bg()
         self.bg_eq = self._render_eq_bg()
         self.bg_pl = self._render_pl_bg()
+        self.bg_sc = self._render_sc_bg()
 
         if files:
             self.add_paths(files)
             if self.playlist:
                 self._pending_play = 0   # starts once the intro voice finishes
         else:
+            titles = cfg.get("stream_titles", {})
             for p in cfg.get("playlist", []):
-                if os.path.exists(p):
+                if radio.is_url(p):
+                    self._append(p, titles.get(p))
+                elif os.path.exists(p):
                     self._append(p)
             idx = cfg.get("current", -1)
             if 0 <= idx < len(self.playlist):
@@ -226,6 +262,8 @@ class TuxAmp:
             "viz_fullscreen": self.viz_fullscreen, "viz_window_size": list(self.viz_window_size), "volume": e.volume, "balance": e.balance,
             "intro": self.intro_enabled, "eq_on": e.eq_on, "eq_auto": self.eq_auto, "preamp": e.preamp, "bands": e.bands,
             "playlist": [t.path for t in self.playlist], "current": self.current,
+            "stream_titles": {t.path: t.title for t in self.playlist if radio.is_url(t.path)},
+            "show_sc": self.show_sc, "stations": self.stations,
         }
         try:
             os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -257,6 +295,9 @@ class TuxAmp:
         if self.show_eq:
             out.append(("eq", y, skin.EQ_H))
             y += skin.EQ_H
+        if self.show_sc:
+            out.append(("sc", y, SC_H))
+            y += SC_H
         if self.show_pl:
             out.append(("pl", y, self.pl_h))
             y += self.pl_h
@@ -383,14 +424,19 @@ class TuxAmp:
             t.info = info
             t.title = display_title(t.path, info)
 
-    def _append(self, path):
-        t = Track(path)
+    def _append(self, path, title=None):
+        t = Track(path, title)
         self.playlist.append(t)
-        self.info_q.put(t)
+        if not radio.is_url(path):
+            self.info_q.put(t)
 
     def add_paths(self, paths):
         added = 0
         for p in paths:
+            if radio.is_url(p):
+                self._append(p.strip())
+                added += 1
+                continue
             p = os.path.abspath(os.path.expanduser(p))
             if os.path.isdir(p):
                 self.last_dir = p
@@ -418,14 +464,33 @@ class TuxAmp:
                 lines = f.read().splitlines()
         except OSError:
             return 0
+        pls = path.lower().endswith(".pls")
+        titles = {}
+        if pls:
+            for ln in lines:
+                m = re.match(r"(?i)\s*title(\d+)\s*=\s*(.*?)\s*$", ln)
+                if m:
+                    titles[m.group(1)] = m.group(2)
+        title = None
         for ln in lines:
             ln = ln.strip()
-            if path.lower().endswith(".pls"):
-                if not ln.lower().startswith("file") or "=" not in ln:
+            num = None
+            if pls:
+                m = re.match(r"(?i)file(\d+)\s*=\s*(.*)$", ln)
+                if not m:
                     continue
-                ln = ln.split("=", 1)[1].strip()
+                num, ln = m.group(1), m.group(2).strip()
+            if ln.upper().startswith("#EXTINF:"):
+                title = ln.split(",", 1)[1].strip() if "," in ln else None
+                continue
             if not ln or ln.startswith("#"):
                 continue
+            if radio.is_url(ln):             # an internet radio station
+                self._append(ln, titles.get(num) if pls else title)
+                title = None
+                n += 1
+                continue
+            title = None
             if ln.startswith("file://"):
                 from urllib.parse import unquote
                 ln = unquote(ln[7:])
@@ -481,7 +546,7 @@ class TuxAmp:
         n = len(self.playlist)
         if not n:
             return
-        if self.engine.position() > 3 and self.engine.state == "playing":
+        if self.engine.position() > 3 and self.engine.state == "playing" and self.engine.duration:
             self.engine.seek(0)
             return
         if self.shuffle and n > 1:
@@ -608,6 +673,7 @@ class TuxAmp:
             ("Main window", None, True),
             ("Equalizer            Alt+G", self.toggle_eq, self.show_eq),
             ("Playlist editor      Alt+E", self.toggle_pl, self.show_pl),
+            ("SHOUTcast radio      Alt+S", self.toggle_sc, self.show_sc),
             None,
             ("Full-screen visualizer (TuxDrop)   Ctrl+Shift+K", self.start_viz),
             ("Visualization: Spectrum", lambda: setattr(self, "vis_mode", 0), self.vis_mode == 0),
@@ -710,6 +776,245 @@ class TuxAmp:
         self.show_pl = not self.show_pl
         self.relayout()
 
+    def toggle_sc(self):
+        self.show_sc = not self.show_sc
+        self.sc_typing = False
+        if self.show_sc and not self.stations and self.sc_view == "mine" and not self.sc_items:
+            self.sc_load("top")                    # nothing saved yet: show what's popular
+        self.relayout()
+
+    # ================================================================ SHOUTcast
+    SC_ROWS = SC_LIST.h // ROW_H
+
+    def sc_load(self, view, query=""):
+        """Show my stations, or fetch the SHOUTcast directory's top list / a search."""
+        self.sc_view, self.sc_sel, self.sc_scroll = view, None, 0
+        self._sc_query = query
+        if view == "mine":
+            self.sc_busy = False
+            self.sc_items = list(self.stations)
+            self.sc_status = f"MY STATIONS: {len(self.stations)}"
+            return
+        self.sc_items = []
+        self.sc_busy = True
+        self.sc_status = "SEARCHING..." if view == "search" else "LOADING TOP..."
+
+        def work():
+            try:
+                res = radio.directory_search(query) if view == "search" else radio.directory_top()
+                self._sc_result = (view, query, res, None)
+            except radio.StreamError as e:
+                self._sc_result = (view, query, [], str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _sc_poll(self):
+        """Main loop: pick up directory results."""
+        r, self._sc_result = self._sc_result, None
+        if r is None:
+            return
+        view, query, res, err = r
+        if (view, query) != (self.sc_view, self._sc_query):
+            return                                  # the user has moved on
+        self.sc_busy = False
+        self.sc_items = res
+        if err:
+            self.sc_status = "DIRECTORY OFFLINE"
+            self.flash(err.upper(), 5)
+        elif view == "top":
+            self.sc_status = f"TOP STATIONS: {len(res)}"
+        else:
+            self.sc_status = f"FOUND: {len(res)}" if res else "NOTHING FOUND"
+
+    def sc_selected(self):
+        if self.sc_sel is not None and 0 <= self.sc_sel < len(self.sc_items):
+            return self.sc_items[self.sc_sel]
+        return None
+
+    def sc_submit(self):
+        """Enter / SEARCH: an address is added and played, anything else is searched for."""
+        q = self.sc_text.strip()
+        self.sc_typing = False
+        if radio.is_url(q):
+            self.sc_add_url(q)
+        elif q:
+            self.sc_load("search", q)
+        else:
+            self.sc_load("top")
+
+    def sc_add_url(self, url):
+        """Save a station by its address and start playing it."""
+        url = url.strip()
+        st = next((x for x in self.stations if x["url"] == url), None)
+        if st is None:
+            st = {"name": url, "url": url, "genre": "", "bitrate": None, "format": ""}
+            self.stations.append(st)
+        self.sc_text, self.sc_cursor = "", 0
+        if self.show_sc:
+            self.sc_load("mine")
+            self.sc_sel = self.stations.index(st)
+            self._sc_ensure_visible(self.sc_sel)
+        self.play_station(st)
+
+    def sc_add_url_prompt(self):
+        """Playlist ADD > Add URL, or Ctrl+L: type or paste an address into the SHOUTcast box."""
+        if not self.show_sc:
+            self.toggle_sc()
+        clip = sdlext.clipboard_text().strip()
+        if radio.is_url(clip) and not self.sc_text:
+            self.sc_text = clip
+        self.sc_cursor = len(self.sc_text)
+        self._sc_start_typing()
+        self.flash("TYPE OR PASTE A STATION ADDRESS, THEN PRESS ENTER", 4)
+
+    def _sc_start_typing(self):
+        self.sc_typing = True
+        try:
+            pygame.key.start_text_input()
+        except pygame.error:
+            pass
+
+    def sc_save_selected(self):
+        st = self.sc_selected()
+        if st is None:
+            self.flash("PICK A STATION IN THE LIST FIRST", 2)
+        elif any(x["url"] == st["url"] for x in self.stations):
+            self.flash("ALREADY IN MY STATIONS", 2)
+        else:
+            self.stations.append(dict(st))
+            self.flash(f"SAVED TO MY STATIONS: {st['name']}".upper(), 2.5)
+
+    def sc_delete_selected(self):
+        st = self.sc_selected()
+        if self.sc_view != "mine" or st is None:
+            self.flash("CLICK MINE, PICK A SAVED STATION, THEN DEL", 2.5)
+            return
+        self.stations = [x for x in self.stations if x["url"] != st["url"]]
+        sel = self.sc_sel
+        self.sc_load("mine")
+        if self.sc_items:
+            self.sc_sel = min(sel, len(self.sc_items) - 1)
+
+    def play_station(self, st):
+        """Play a station from the SHOUTcast window, through the playlist (as Winamp does)."""
+        for i, t in enumerate(self.playlist):
+            if t.path == st["url"]:
+                break
+        else:
+            self._append(st["url"], st["name"])
+            i = len(self.playlist) - 1
+        if st["name"] != st["url"]:
+            self.playlist[i].title = st["name"]
+        self.selected = {i}
+        self.play_index(i)
+
+    def _sc_ensure_visible(self, i):
+        if i < self.sc_scroll:
+            self.sc_scroll = i
+        elif i >= self.sc_scroll + self.SC_ROWS:
+            self.sc_scroll = i - self.SC_ROWS + 1
+        self.sc_scroll = max(0, min(self.sc_scroll, len(self.sc_items) - self.SC_ROWS))
+
+    def sc_click(self, sid):
+        if sid == "search":
+            self.sc_submit()
+        elif sid == "addurl":
+            if radio.is_url(self.sc_text.strip()):
+                self.sc_submit()
+            else:
+                self.sc_add_url_prompt()
+        elif sid == "mine":
+            self.sc_load("mine")
+        elif sid == "top":
+            self.sc_load("top")
+        elif sid == "scplay":
+            st = self.sc_selected()
+            if st is None:
+                self.flash("PICK A STATION IN THE LIST FIRST", 2)
+            else:
+                self.play_station(st)
+        elif sid == "save":
+            self.sc_save_selected()
+        elif sid == "del":
+            self.sc_delete_selected()
+
+    def _station_loaded(self, t):
+        """A station is on the air: show its name, bit rate and sample rate."""
+        st = self.engine.stream
+        if st is None:
+            return
+        t.info = {"bitrate": st.bitrate, "samplerate": st.samplerate or self.engine.rate, "channels": 2}
+        if st.name and t.title == t.path:
+            t.title = st.name.strip()
+        for x in self.stations:                    # fill in what a typed-in address didn't say
+            if x["url"] == t.path:
+                if x["name"] == x["url"] and st.name:
+                    x["name"] = st.name.strip()
+                x["bitrate"] = x.get("bitrate") or st.bitrate
+                x["format"] = x.get("format") or st.codec
+        self.engine.title = t.title
+        if self.viz:
+            self.viz.show("title", t.title, 5)
+
+    def _sc_list_click(self, ly, right=False):
+        idx = self.sc_scroll + (ly - SC_LIST.y) // ROW_H
+        if not 0 <= idx < len(self.sc_items):
+            self.sc_sel = None
+            return
+        self.sc_sel = idx
+        if right:
+            st = self.sc_items[idx]
+            items = [("Play", lambda: self.play_station(st)), None]
+            if self.sc_view == "mine":
+                items.append(("Remove from my stations", self.sc_delete_selected))
+            else:
+                items.append(("Save to my stations", self.sc_save_selected))
+            self.popup(items)
+            return
+        now = pygame.time.get_ticks()
+        if self._sc_last_click[0] == idx and now - self._sc_last_click[1] < 400:
+            self._sc_last_click = (None, 0)
+            self.play_station(self.sc_items[idx])
+            return
+        self._sc_last_click = (idx, now)
+
+    def _sc_cursor_at(self, bx):
+        """Cursor position in the entry box for a click at base x bx."""
+        f = self.pl_font
+        x = (bx - SC_ENTRY[0] - 2) * self.scale + getattr(self, "_sc_text_off", 0)
+        return min(range(len(self.sc_text) + 1), key=lambda i: abs(f.size(self.sc_text[:i])[0] - x))
+
+    def _sc_key(self, ev):
+        """Typing in the SHOUTcast entry box."""
+        t, c = self.sc_text, self.sc_cursor
+        if ev.type == pygame.TEXTINPUT:
+            add = "".join(ch for ch in ev.text if ch.isprintable())
+            self.sc_text, self.sc_cursor = (t[:c] + add + t[c:])[:1000], min(1000, c + len(add))
+            return
+        k = ev.key
+        ctrl = ev.mod & pygame.KMOD_CTRL
+        if k in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self.sc_submit()
+        elif k in (pygame.K_ESCAPE, pygame.K_TAB):
+            self.sc_typing = False
+        elif k == pygame.K_BACKSPACE and c:
+            self.sc_text, self.sc_cursor = t[:c - 1] + t[c:], c - 1
+        elif k == pygame.K_DELETE:
+            self.sc_text = t[:c] + t[c + 1:]
+        elif k == pygame.K_LEFT:
+            self.sc_cursor = max(0, c - 1)
+        elif k == pygame.K_RIGHT:
+            self.sc_cursor = min(len(t), c + 1)
+        elif k == pygame.K_HOME:
+            self.sc_cursor = 0
+        elif k == pygame.K_END:
+            self.sc_cursor = len(t)
+        elif ctrl and k == pygame.K_v:
+            add = " ".join(sdlext.clipboard_text().split())
+            self.sc_text, self.sc_cursor = (t[:c] + add + t[c:])[:1000], min(1000, c + len(add))
+        elif ctrl and k == pygame.K_u:
+            self.sc_text, self.sc_cursor = "", 0
+
     def toggle_shuffle(self):
         self.shuffle = not self.shuffle
         self.flash("SHUFFLE: " + ("ON" if self.shuffle else "OFF"), 1.5)
@@ -742,7 +1047,7 @@ class TuxAmp:
             ("c_d", (10, 46, 8, 8)), ("c_v", (10, 54, 8, 8)),
             ("time", (36, 25, 66, 15)), ("vis", (24, 43, 76, 16)),
             ("volume", VOL_R), ("balance", BAL_R),
-            ("castbtn", CAST_R), ("eqbtn", EQB_R), ("plbtn", PLB_R),
+            ("castbtn", CAST_R), ("scbtn", SCB_R), ("eqbtn", EQB_R), ("plbtn", PLB_R),
             ("pos", (16, 72, 248, 10)),
             ("prev", (16, 88, 23, 18)), ("play", (39, 88, 23, 18)), ("pause", (62, 88, 23, 18)),
             ("stop", (85, 88, 23, 18)), ("next", (108, 88, 22, 18)), ("eject", (136, 89, 22, 16)),
@@ -756,6 +1061,11 @@ class TuxAmp:
         for i in range(10):
             spots.append((f"band{i}", (78 + 18 * i, 38, 14, 63)))
         return spots
+
+    def _sc_spots(self):
+        return ([("close", (260, 3, 9, 9)), ("title", (0, 0, W, 14)), ("entry", SC_ENTRY),
+                 ("list", SC_LIST), ("scroll", SC_SCROLL)]
+                + [(sid, r) for sid, r, _ in SC_BUTTONS])
 
     def _pl_spots(self):
         g = self.pl_geo()
@@ -771,12 +1081,13 @@ class TuxAmp:
     def hit(self, bx, by):
         for name, y0, h in self._sections():
             if y0 <= by < y0 + h:
-                if name in ("main", "eq") and bx >= W:
+                if name in ("main", "eq", "sc") and bx >= W:
                     return name, "title", y0
                 if (name, y0, h) == self._sections()[-1] and name != "pl" and not (name == "main" and self.shade) \
                         and bx >= W - SIZE_GRIP and by >= y0 + h - SIZE_GRIP:
                     return name, "sizegrip", y0
-                spots = {"main": self._main_spots, "eq": self._eq_spots, "pl": self._pl_spots}[name]()
+                spots = {"main": self._main_spots, "eq": self._eq_spots, "sc": self._sc_spots,
+                         "pl": self._pl_spots}[name]()
                 for sid, r in spots:
                     if pygame.Rect(r).collidepoint(bx, by - y0):
                         return name, sid, y0
@@ -800,6 +1111,10 @@ class TuxAmp:
             # Ignore the echoes of our own moves, which arrive late.
             if not self.viz and not self.drag and pygame.time.get_ticks() - getattr(self, "_moved_at", 0) > 500:
                 self._pos = (ev.x, ev.y)
+        elif ev.type == pygame.DROPTEXT:
+            if radio.is_url(ev.text.strip()):      # a station address dragged from a browser
+                self.sc_add_url(ev.text.strip())
+            return
         elif ev.type == pygame.DROPFILE:
             start = len(self.playlist)
             self.add_paths([ev.file])
@@ -824,6 +1139,9 @@ class TuxAmp:
                     self.menu = None
             return
 
+        if self.sc_typing and ev.type in (pygame.KEYDOWN, pygame.TEXTINPUT):
+            self._sc_key(ev)
+            return
         if ev.type == pygame.MOUSEBUTTONDOWN:
             if ev.button in (1, 3):
                 self.mouse_down(ev)
@@ -844,6 +1162,15 @@ class TuxAmp:
             return
         self.focus_area = sec
         ly = by - y0
+        if sec == "sc" and sid == "entry":
+            if ev.button == 1:
+                self._sc_start_typing()
+                self.sc_cursor = self._sc_cursor_at(bx)
+            return
+        self.sc_typing = False
+        if sec == "sc" and sid == "list":
+            self._sc_list_click(ly, right=ev.button == 3)
+            return
         if ev.button == 3:
             if sec == "pl" and sid == "list":
                 self._pl_click(bx, ly, right=True)
@@ -905,7 +1232,7 @@ class TuxAmp:
         if sec == "pl" and sid == "list":
             self._pl_click(bx, ly)
             return
-        if sec == "pl" and sid == "scroll":
+        if sid == "scroll" and sec in ("pl", "sc"):
             self.drag = ("slider", sec, sid, y0)
             self._slider_update(sec, sid, bx, ly)
             return
@@ -1026,6 +1353,8 @@ class TuxAmp:
         if sec == "pl":
             self.pl_scroll -= ev.y * 3
             self._clamp_pl_scroll()
+        elif sec == "sc":
+            self.sc_scroll = max(0, min(self.sc_scroll - ev.y * 2, len(self.sc_items) - self.SC_ROWS))
         else:
             self.engine.set_volume(self.engine.volume + ev.y * 0.03)
             self.flash(f"VOLUME: {int(self.engine.volume * 100)}%", 1)
@@ -1039,6 +1368,8 @@ class TuxAmp:
                 self.toggle_eq()
             elif sec == "pl":
                 self.toggle_pl()
+            elif sec == "sc":
+                self.toggle_sc()
             return
         if sec == "main":
             if sid == "menu" or sid == "c_o":
@@ -1054,7 +1385,11 @@ class TuxAmp:
                 self.start_viz()
             elif sid == "c_i":
                 t = self.cur_track()
-                if t:
+                if t and radio.is_url(t.path):
+                    st = self.engine.stream
+                    extra = f"  {st.codec} {st.bitrate or '?'}KBPS  {st.genre}" if st is not None else ""
+                    self.flash(f"{t.title}  {self.engine.stream_url or t.path}{extra}", 6)
+                elif t:
                     inf = t.info or {}
                     self.flash(f"{os.path.basename(t.path)}  {inf.get('bitrate', '?')}KBPS "
                                f"{inf.get('samplerate', '?')}HZ  {fmt_time(t.duration)}", 5)
@@ -1075,6 +1410,8 @@ class TuxAmp:
                 x, y, w, h = CAST_R
                 oy = self._sec_y("main")
                 self.cast_menu((round(x * self.scale), round((oy + y + h + 1) * self.scale)))
+            elif sid == "scbtn":
+                self.toggle_sc()
             elif sid == "eqbtn":
                 self.toggle_eq()
             elif sid == "plbtn":
@@ -1104,11 +1441,14 @@ class TuxAmp:
                 self.eq_auto = not self.eq_auto
             elif sid == "presets":
                 self.presets_menu((217, self._sec_y("eq") + 31))
+        elif sec == "sc":
+            self.sc_click(sid)
         elif sec == "pl":
             y = self._sec_y("pl")
             if sid == "add":
                 self.popup([("Add file(s)...", lambda: self.open_browser(False)),
                             ("Add folder...", lambda: self.open_browser(False)),
+                            ("Add URL (internet radio)...   Ctrl+L", self.sc_add_url_prompt),
                             ("Load playlist (.m3u/.pls)...", lambda: self.open_browser(False))],
                            (14, y + self.pl_h - 27))
             elif sid == "rem":
@@ -1202,6 +1542,10 @@ class TuxAmp:
             frac = (ly - sr.y - 9) / max(1, sr.h - 18)
             self.pl_scroll = int(round(frac * (n - self.pl_rows)))
             self._clamp_pl_scroll()
+        elif sec == "sc" and sid == "scroll":
+            n = len(self.sc_items)
+            frac = (ly - SC_SCROLL.y - 9) / max(1, SC_SCROLL.h - 18)
+            self.sc_scroll = max(0, min(int(round(frac * (n - self.SC_ROWS))), n - self.SC_ROWS))
 
     def _pl_click(self, bx, ly, right=False):
         idx = self.pl_scroll + (ly - self.pl_geo()["list"].y) // ROW_H
@@ -1211,8 +1555,17 @@ class TuxAmp:
             return
         now = pygame.time.get_ticks()
         if not right and self.last_pl_click[0] == idx and now - self.last_pl_click[1] < 400:
-            self.play_index(idx)
             self.last_pl_click = (None, 0)
+            self.selected = {idx}
+            self.sel_anchor = idx
+            e = self.engine
+            if idx == self.current and (e.loading or e.state in ("playing", "paused")):
+                # the current song: double-click pauses it, and again resumes it
+                if not e.loading:
+                    e.pause()
+                    self.flash("PAUSED" if e.state == "paused" else "PLAYING", 1)
+            else:
+                self.play_index(idx)
             return
         self.last_pl_click = (idx, now)
         mods = pygame.key.get_mods()
@@ -1239,6 +1592,10 @@ class TuxAmp:
             self.toggle_eq()
         elif alt and k == pygame.K_e:
             self.toggle_pl()
+        elif alt and k == pygame.K_s:
+            self.toggle_sc()
+        elif ctrl and k == pygame.K_l:
+            self.sc_add_url_prompt()
         elif ctrl and k == pygame.K_a:
             self.selected = set(range(len(self.playlist)))
         elif ctrl and k == pygame.K_q:
@@ -1339,6 +1696,15 @@ class TuxAmp:
             s.fill(skin.FRAME_HI, (70, y, 5, 1))
         return s
 
+    def _render_sc_bg(self):
+        s = pygame.Surface((W, SC_H))
+        skin.frame_background(s, (0, 0, W, SC_H))
+        skin.inset(s, SC_ENTRY, face=skin.PL_BG)
+        skin.inset(s, SC_LIST, face=skin.PL_BG)
+        skin.inset(s, SC_SCROLL, face=(20, 20, 28))
+        skin.inset(s, SC_STATUS)
+        return s
+
     def _render_pl_bg(self):
         g = self.pl_geo()
         w, h = self.pl_w, self.pl_h
@@ -1369,6 +1735,8 @@ class TuxAmp:
                     self.draw_main(b, y)
             elif name == "eq":
                 self.draw_eq(b, y)
+            elif name == "sc":
+                self.draw_sc(b, y)
             elif name == "pl":
                 self.draw_pl(b, y)
         self._present(b)
@@ -1376,6 +1744,8 @@ class TuxAmp:
             self._draw_logo()
         if self.show_pl:
             self.draw_pl_text(self._sec_y("pl"))
+        if self.show_sc:
+            self.draw_sc_text(self._sec_y("sc"))
         if self.browser:
             self.browser.draw(self.screen)
         if self.menu:
@@ -1425,12 +1795,22 @@ class TuxAmp:
         t = self.cur_track()
         if t is None:
             return f"TUXAMP {VERSION}  ***  DROP FILES HERE OR PRESS L TO OPEN", True
-        dur = self.engine.duration or t.duration
-        txt = f"{self.current + 1}. {t.title}"
-        if dur:
-            txt += f" ({fmt_time(dur)})"
-        if self.engine.loading:
-            txt = "LOADING... " + txt
+        e = self.engine
+        if radio.is_url(t.path):
+            # a station: the song now playing (from the station), then the station
+            song = e.stream.title if e.stream is not None else ""
+            txt = f"{self.current + 1}. " + (f"{song}  ({t.title})" if song and song != t.title else t.title)
+            if e.loading:
+                txt = "CONNECTING... " + txt
+            elif e.mode == "stream" and e.state == "playing" and e._stream_wait and e.remote is None:
+                txt = "BUFFERING... " + txt
+        else:
+            dur = e.duration or t.duration
+            txt = f"{self.current + 1}. {t.title}"
+            if dur:
+                txt += f" ({fmt_time(dur)})"
+            if e.loading:
+                txt = "LOADING... " + txt
         r = self.engine.remote
         if r is not None:
             if r.state == "connecting":
@@ -1533,8 +1913,9 @@ class TuxAmp:
                 if c == "#":
                     s.set_at((ix + i, iy + j), skin.ICON)
 
-        # ---- EQ / PL toggles
-        for sid, r, label, on in (("eqbtn", EQB_R, "EQ", self.show_eq),
+        # ---- SC / EQ / PL toggles
+        for sid, r, label, on in (("scbtn", SCB_R, "SC", self.show_sc),
+                                  ("eqbtn", EQB_R, "EQ", self.show_eq),
                                   ("plbtn", PLB_R, "PL", self.show_pl)):
             rr = pygame.Rect(r).move(0, oy)
             skin.button(s, rr, self._is_pressed("main", sid))
@@ -1738,6 +2119,90 @@ class TuxAmp:
                 s.fill(col, (x + i, y + 1 + a, 1, b - a + 1))
             prev = yy
 
+    def draw_sc(self, s, oy):
+        s.blit(self.bg_sc, (0, oy))
+        skin.titlebar(s, oy, "TUXAMP SHOUTCAST", self.focused, buttons=("close",), menu=False)
+        if self._is_pressed("sc", "close"):
+            skin.button(s, (260, oy + 3, 9, 9), True)
+        for sid, r, lab in SC_BUTTONS:
+            rr = pygame.Rect(r).move(0, oy)
+            lit = (sid == "mine" and self.sc_view == "mine") or (sid == "top" and self.sc_view == "top")
+            skin.button(s, rr, self._is_pressed("sc", sid) or lit)
+            skin.text_center(s, rr, lab)
+        # scrollbar thumb
+        n, rows = len(self.sc_items), self.SC_ROWS
+        ty = SC_SCROLL.y + (int((SC_SCROLL.h - 18) * self.sc_scroll / (n - rows)) if n > rows else 0)
+        skin.button(s, (SC_SCROLL.x, oy + ty, SC_SCROLL.w, 18))
+        status = self.sc_status or "SHOUTCAST RADIO"
+        if self.sc_busy and int(time.monotonic() * 3) % 2:
+            status = status.rstrip(".")
+        skin.text(s, SC_STATUS[0] + 3, oy + SC_STATUS[1] + 3, status[:26], skin.LCD_GREEN)
+
+    def draw_sc_text(self, oy):
+        """Station list and entry box, drawn at screen resolution like the playlist."""
+        sc, f, scr = self.scale, self.pl_font, self.screen
+        clip = scr.get_clip()
+        # ---- entry box
+        ex, ey, ew, eh = SC_ENTRY
+        box = pygame.Rect(round((ex + 2) * sc), round((oy + ey + 1) * sc), round((ew - 4) * sc), round((eh - 2) * sc))
+        scr.set_clip(box)
+        if self.sc_text or self.sc_typing:
+            ts = f.render(self.sc_text, True, skin.PL_NORMAL)
+            cx = f.size(self.sc_text[:self.sc_cursor])[0]
+            off = getattr(self, "_sc_text_off", 0)
+            off = min(off, cx)                               # keep the cursor in view
+            off = max(off, cx - box.w + round(3 * sc))
+            off = max(0, min(off, max(0, ts.get_width() - box.w + round(3 * sc))))
+            self._sc_text_off = off
+            ty = box.y + (box.h - ts.get_height()) // 2
+            scr.blit(ts, (box.x - off, ty))
+            if self.sc_typing and int(time.monotonic() * 2) % 2 == 0:
+                scr.fill(skin.PL_CURRENT, (box.x - off + cx, box.y + round(sc), max(1, round(sc / 2)), box.h - round(2 * sc)))
+        else:
+            ts = f.render("Type a station address, or words to search", True, (0, 120, 0))
+            scr.blit(ts, (box.x, box.y + (box.h - ts.get_height()) // 2))
+        # ---- station list
+        lx, lw = round(SC_LIST.x * sc), round(SC_LIST.w * sc)
+        top, rh = round((oy + SC_LIST.y) * sc), ROW_H * sc
+        scr.set_clip(pygame.Rect(lx, top, lw, round(SC_LIST.h * sc)))
+        cur = self.cur_track()
+        playing = cur.path if cur is not None and (self.engine.mode is not None or self.engine.loading) else None
+        if not self.sc_items:
+            if self.sc_view == "mine" and not self.sc_busy:
+                hint = ["No saved stations yet.", "Click TOP, or type words and press SEARCH,",
+                        "then pick a station and press SAVE.", "To add an address: paste it above, press ADD URL."]
+            else:
+                hint = []
+            for row, txt in enumerate(hint):
+                ts = f.render(txt, True, (0, 150, 0))
+                scr.blit(ts, (lx + round(2 * sc), top + round(row * rh) + int(rh - ts.get_height()) // 2))
+        has_ff = None
+        for row in range(self.SC_ROWS + 1):
+            i = self.sc_scroll + row
+            if i >= len(self.sc_items):
+                break
+            st = self.sc_items[i]
+            y = top + round(row * rh)
+            if i == self.sc_sel:
+                scr.fill(skin.PL_SELBG, (lx, y, lw, top + round((row + 1) * rh) - y))
+            fmt = st.get("format") or ""
+            if fmt and fmt != "MP3" and has_ff is None:
+                has_ff = bool(radio.ffmpeg())
+            col = skin.PL_CURRENT if st["url"] == playing else skin.PL_NORMAL
+            if fmt and fmt != "MP3" and not has_ff:
+                col = (0, 130, 0)                           # needs ffmpeg to play
+            right_txt = " ".join(x for x in (f"{st['bitrate']}k" if st.get("bitrate") else "", fmt) if x)
+            ds = f.render(right_txt, False, col)
+            right = lx + lw - round(3 * sc)
+            maxw = right - ds.get_width() - round(4 * sc) - (lx + round(2 * sc))
+            ts = f.render(st["name"], False, col)
+            if ts.get_width() > maxw:
+                ts = ts.subsurface((0, 0, max(1, maxw), ts.get_height()))
+            ty = y + int(rh - ts.get_height()) // 2
+            scr.blit(ts, (lx + round(2 * sc), ty))
+            scr.blit(ds, (right - ds.get_width(), ty))
+        scr.set_clip(clip)
+
     def draw_pl(self, s, oy):
         s.blit(self.bg_pl, (0, oy))
         g = self.pl_geo()
@@ -1901,6 +2366,13 @@ class TuxAmp:
             for evt in self.engine.update():
                 if evt == "ended":
                     self.next_track(manual=False)
+                elif evt == "error" and self.engine.error_msg:
+                    # a station that would not play: say why, and stay on it
+                    t = self.cur_track()
+                    self.flash(f"CANNOT PLAY {t.title if t else 'STATION'}: {self.engine.error_msg}".upper(), 8)
+                elif evt == "streamend":
+                    msg = self.engine.error_msg or "the station stopped sending"
+                    self.flash(f"STATION LOST: {msg}".upper(), 8)
                 elif evt == "error":
                     t = self.cur_track()
                     self.flash(f"CANNOT PLAY {os.path.basename(t.path) if t else ''}", 3)
@@ -1915,7 +2387,9 @@ class TuxAmp:
                     self.error_count = 0
                     # pick up duration / format details for display
                     t = self.cur_track()
-                    if t is not None:
+                    if t is not None and self.engine.mode == "stream":
+                        self._station_loaded(t)
+                    elif t is not None:
                         if t.info is None:
                             t.info = read_info(t.path)
                             t.title = display_title(t.path, t.info)
@@ -1924,6 +2398,11 @@ class TuxAmp:
                         if self.viz:
                             self.viz.show("title", t.title, 5)
             self._cast_poll()
+            self._sc_poll()
+            t = self.cur_track()
+            if t is not None and self.engine.mode == "stream" and self.engine.stream is not None:
+                if self.engine.stream.samplerate:
+                    t.info["samplerate"] = self.engine.stream.samplerate
             if self._global_drag():
                 self._poll_drag()
             self.marquee_off += 0.6

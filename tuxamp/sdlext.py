@@ -54,6 +54,25 @@ def capture_mouse(on):
             pass
 
 
+def clipboard_text():
+    """The text on the clipboard, or "" (pygame 2.6 has no clipboard call of its own)."""
+    lib = _sdl()
+    if lib is None:
+        return ""
+    try:
+        lib.SDL_GetClipboardText.restype = ctypes.c_void_p
+        lib.SDL_free.argtypes = [ctypes.c_void_p]
+        p = lib.SDL_GetClipboardText()
+        if not p:
+            return ""
+        try:
+            return ctypes.string_at(p).decode("utf-8", "replace")
+        finally:
+            lib.SDL_free(p)
+    except Exception:
+        return ""
+
+
 _x11 = False
 
 

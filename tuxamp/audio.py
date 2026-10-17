@@ -11,6 +11,11 @@ preamp) and the balance are applied to each chunk as it is made, so moving a
 slider is heard within about 0.1 s, faded in over ~12 ms so it never clicks,
 without ever stopping or restarting playback.
 
+Internet radio (mode "stream") goes through the same chunked playback: a
+radio.Stream decodes the station on its own thread, and the feeder moves its
+audio into a ring buffer just ahead of the playhead, so the EQ, balance and
+visualizers work on radio too.
+
 While casting (self.remote is a cast.CastSession) the device plays the audio
 and its position drives the clock, so the time display, seek bar and
 visualizers follow what the device is playing. The stream is sent at playback
@@ -26,7 +31,7 @@ import time
 import numpy as np
 import pygame
 
-from . import cast
+from . import cast, radio
 
 EQ_FREQS = [60, 170, 310, 600, 1000, 3000, 6000, 12000, 14000, 16000]
 NTAPS = 4096                   # EQ filter length
@@ -36,6 +41,8 @@ BUFFER = 2048                  # sound card buffer (frames)
 FADE = 512                     # an EQ / balance change fades in over this many frames
 CAST_LEAD = 3.0                # while casting, send the audio this far (s) ahead of the device
 CAST_HEAD = 4.0                # ... and this much at the start, before the device plays
+STREAM_PREBUF = 1.5            # radio: seconds buffered before playing (and after a dropout)
+STREAM_RING = 20.0             # radio: seconds the ring buffer holds
 
 
 def _design_eq_fir(rate, preamp_db, bands_db, ntaps=NTAPS):
@@ -75,7 +82,7 @@ class Engine:
 
         self.path = None
         self.raw = None          # decoded int16 array (n, ch)
-        self.mode = None         # "sound" | "music" | None
+        self.mode = None         # "sound" | "music" | "stream" | None
         self.duration = 0.0
         self.state = "stopped"   # stopped | playing | paused
         self.loading = False
@@ -112,6 +119,14 @@ class Engine:
         self._cast_last = None   # (frame, chunk) last made for the device
         self._cast_lock = threading.Lock()
         self._cast_src = None    # the stream the device is reading
+        # internet radio
+        self.stream = None       # radio.Stream while a station is connected
+        self.stream_url = None   # the station's audio address, once known (for casting)
+        self.stream_mime = "audio/mpeg"
+        self.error_msg = None    # why the last station failed
+        self._ring = None        # ring buffer; self.raw is a view of its filled part
+        self._ring_base = 0      # stream frame number of self.raw[0]
+        self._stream_wait = True # filling up before playing
         threading.Thread(target=self._feeder, daemon=True, name="audio-feed").start()
 
     # ------------------------------------------------------------ loading
@@ -125,6 +140,11 @@ class Engine:
         self.duration = 0.0
         self.loading = True
         self._autoplay = autoplay
+        self.error_msg = None
+        if radio.is_url(path):
+            self.stream_url = None
+            self.stream = radio.Stream(path, self.rate)      # picked up in update()
+            return
         threading.Thread(target=self._loader, args=(gen, path), daemon=True).start()
 
     def _loader(self, gen, path):
@@ -192,7 +212,11 @@ class Engine:
 
     def _feed(self, start=False):
         """Keep one chunk queued behind the one playing (call with _feed_lock held)."""
-        if not self._feeding or self.raw is None or self._feed_pos >= len(self.raw):
+        if not self._feeding or self.raw is None:
+            return
+        if self.mode == "stream" and not self._stream_ready():
+            return
+        if self._feed_pos >= len(self.raw):
             return
         if start:
             self.channel.play(self._make_chunk())
@@ -213,6 +237,59 @@ class Engine:
                 self._idle_seen = True
         else:
             self._idle_seen = False
+
+    # ------------------------------------------------------------ internet radio
+    def _stream_ready(self):
+        """Radio: make sure the next chunk (and the EQ's look-ahead) is in the
+        ring buffer. False while the station's audio has not arrived yet."""
+        s = self.stream
+        if s is None:
+            return False
+        if self._stream_wait:
+            ahead = s.available() + len(self.raw) - self._feed_pos
+            if ahead < STREAM_PREBUF * self.rate and s.state in ("connecting", "playing"):
+                return False
+            self._stream_wait = False
+        need = self._feed_pos + CHUNK + NTAPS // 2
+        self._stream_fill(need)
+        if len(self.raw) >= need:
+            return True
+        if not self.channel.get_busy():
+            self._stream_wait = True      # ran dry: buffer up again before carrying on
+        return False
+
+    def _stream_fill(self, need):
+        n = len(self.raw)
+        if need <= n:
+            return
+        cap = len(self._ring)
+        if need + CHUNK * 8 > cap:
+            # make room: keep only what the EQ filter still needs to look back at
+            drop = max(0, self._feed_pos - NTAPS)
+            keep = n - drop
+            self._ring[:keep] = self._ring[drop:n]
+            n = keep
+            self._feed_pos -= drop
+            self._ring_base += drop
+            self._fed = collections.deque(((a - drop, p) for a, p in self._fed), maxlen=10)
+        data = self.stream.read(min(need - n + CHUNK * 8, cap - n))     # a little ahead
+        self._ring[n:n + len(data)] = data
+        self.raw = self._ring[:n + len(data)]
+
+    def _stream_reset(self):
+        """An empty ring buffer for a station starting (or reconnecting)."""
+        if self._ring is None:
+            self._ring = np.zeros((int(STREAM_RING * self.rate), 2), np.int16)
+        self.raw = self._ring[:0]
+        self._ring_base = 0
+        self._feed_pos = 0
+        self._fed.clear()
+        self._stream_wait = True
+
+    def _close_stream(self):
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None
 
     def _feeder(self):
         while True:
@@ -240,6 +317,19 @@ class Engine:
         if self.remote is not None:
             self._stop_local()
             self.remote.load(self._cast_source(pos), self.title or "TuxAmp")
+        elif self.mode == "stream":
+            with self._feed_lock:
+                self.channel.stop()
+                if self.stream is None:          # e.g. back from casting: tune in again
+                    self.stream = radio.Stream(self.path, self.rate)
+                    self._stream_reset()
+                self._fed_H, self._fed_gains = self._H, self._gains()
+                self._feeding = True
+                self._idle_seen = False
+                self._apply_volume()
+                self._feed(start=True)
+                self._feed()
+            pos = 0.0
         elif self.mode == "sound":
             with self._feed_lock:
                 self.channel.stop()
@@ -263,7 +353,7 @@ class Engine:
             self._pause_pos = self.position()
             if self.remote is not None:
                 self.remote.pause()
-            elif self.mode == "sound":
+            elif self.mode in ("sound", "stream"):
                 self.channel.pause()
             else:
                 pygame.mixer.music.pause()
@@ -276,7 +366,7 @@ class Engine:
             return
         if self.remote is not None:
             self.remote.resume()
-        elif self.mode == "sound":
+        elif self.mode in ("sound", "stream"):
             self.channel.unpause()
         else:
             pygame.mixer.music.unpause()
@@ -289,11 +379,18 @@ class Engine:
         self._end_cast_stream()
         if self.remote is not None and self.state != "stopped":
             self.remote.stop()
+        if self.stream is not None or self.mode == "stream":
+            # stopping a station hangs up; playing again tunes in afresh
+            with self._feed_lock:
+                self._close_stream()
+                if self.mode == "stream":
+                    self.mode, self.raw = None, None
+            self.loading = False
         self.state = "stopped"
         self._start = 0.0
 
     def seek(self, pos):
-        if self.mode is None:
+        if self.mode is None or self.mode == "stream":       # a live station can't seek
             return
         if self.state == "playing":
             self._start_at(pos)
@@ -315,6 +412,9 @@ class Engine:
     def position(self):
         if self.state == "playing" and self.remote is not None:
             p = self.remote.position()
+        elif self.state == "playing" and self.mode == "stream":
+            # what has been played: queued audio minus what is still waiting to be heard
+            p = max(0.0, (self._ring_base + self._feed_pos - 2 * CHUNK - BUFFER) / self.rate)
         elif self.state == "playing":
             p = self._start + (time.monotonic() - self._t0)
         elif self.state == "paused":
@@ -389,6 +489,9 @@ class Engine:
 
     def _cast_source(self, pos):
         self._end_cast_stream()
+        if self.mode == "stream":
+            # the device tunes in to the station itself
+            return cast.UrlSource(self.stream_url or self.path, self.stream_mime)
         if self.mode != "sound":
             return cast.FileSource(self.path, pos, self.duration)
         src = cast.PcmSource(self.raw, self.rate, int(pos * self.rate), render=self._cast_render)
@@ -423,6 +526,9 @@ class Engine:
         if self.remote is not None:
             self.remote.close()
         self._stop_local()
+        if self.mode == "stream":
+            with self._feed_lock:
+                self._close_stream()          # the device downloads it instead
         self.remote = session
         if self.eq_on and self.preamp:
             session.set_volume(self.remote_volume())
@@ -447,9 +553,14 @@ class Engine:
     # ------------------------------------------------------------ visualizer
     def _played(self, i, n):
         """Frames [i, i+n) as heard (EQ applied), or None near the end."""
-        if i + n > len(self.raw):
+        raw = self.raw
+        if raw is None:
             return None
-        seg = self.raw[i:i + n].copy()
+        if self.mode == "stream":
+            i -= self._ring_base
+        if i < 0 or i + n > len(raw):
+            return None
+        seg = raw[i:i + n].copy()
         if self.remote is None:
             for a, pcm in list(self._fed):          # use the EQ'd chunks where we have them
                 lo, hi = max(i, a), min(i + n, a + len(pcm))
@@ -459,7 +570,7 @@ class Engine:
 
     def samples(self, n=1024):
         """Return a (n,) float array (mono, -1..1) at the playhead, or None."""
-        if self.mode != "sound" or self.state != "playing":
+        if self.mode not in ("sound", "stream") or self.state != "playing":
             return None
         seg = self._played(int(self.position() * self.rate), n)
         if seg is None:
@@ -468,7 +579,7 @@ class Engine:
 
     def samples_stereo(self, n=2048):
         """Return a (n, 2) float32 array (-1..1) at the playhead, or None."""
-        if self.mode != "sound" or self.state != "playing":
+        if self.mode not in ("sound", "stream") or self.state != "playing":
             return None
         seg = self._played(int(self.position() * self.rate), n)
         if seg is None:
@@ -501,6 +612,23 @@ class Engine:
                 events.append("loaded")
                 if self._autoplay:
                     self._start_at(0.0)
+        s = self.stream
+        if self.loading and s is not None:
+            if s.state == "error":
+                self.loading = False
+                self.error_msg = s.error
+                self._close_stream()
+                events.append("error")
+            elif s.available() >= STREAM_PREBUF * self.rate or (s.state == "ended" and s.available()):
+                self.loading = False
+                self.mode = "stream"
+                self.duration = 0.0
+                self.stream_url, self.stream_mime = s.stream_url, s.mime
+                with self._feed_lock:
+                    self._stream_reset()
+                events.append("loaded")
+                if self._autoplay:
+                    self._start_at(0.0)
         if self.remote is not None:
             r = self.remote
             if r.state == "error":
@@ -511,6 +639,16 @@ class Engine:
             elif self.state == "playing" and r.state == "stopped":
                 self.state = "stopped"          # stopped from the device itself
                 self._start = 0.0
+        elif self.state == "playing" and self.mode == "stream":
+            if s is not None and s.stream_url:
+                self.stream_url = s.stream_url
+            with self._feed_lock:
+                gone = (s is None or s.state in ("error", "ended")) and (s is None or not s.available()) \
+                    and not self.channel.get_busy() and len(self.raw) - self._feed_pos < CHUNK + NTAPS // 2
+            if gone:
+                self.error_msg = s.error if s is not None else None
+                self.stop()
+                events.append("streamend")
         elif self.state == "playing":
             if self.mode == "sound":
                 with self._feed_lock:

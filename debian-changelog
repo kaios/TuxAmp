@@ -1,3 +1,22 @@
+tuxamp (0.1.7~alpha) unstable; urgency=medium
+
+  * New: SHOUTcast / Icecast internet radio. An SC button on the main
+    window opens the SHOUTcast window: the SHOUTcast directory's top
+    stations, search, saved stations (MINE), and adding any station by
+    its address (also Ctrl+L, playlist ADD > Add URL, drag and drop, and
+    .pls/.m3u station files). Song titles from the station scroll in the
+    display; the EQ, balance and visualizers work on radio; dropped
+    connections reconnect by itself. MP3 stations need nothing else;
+    AAC, Ogg and HLS stations use ffmpeg when it is installed.
+  * The volume and balance sliders are a little shorter to make room for
+    the SC button.
+  * Changed: double-clicking the song that is playing in the playlist
+    pauses it, and double-clicking it again resumes it, instead of
+    restarting the song.
+  * Documents updated (README, BUGFIXES.md).
+
+ -- Shawn Rapaz <shawnrapaz@gmail.com>  Sat, 17 Oct 2026 15:27:04 +0900
+
 tuxamp (0.1.6~alpha) unstable; urgency=medium
 
   * Fixed: while casting, moving an EQ band slider or picking a preset

@@ -405,6 +405,16 @@ class FileSource:
             return f.read(n)
 
 
+class UrlSource:
+    """Internet radio: the device plays the station's own address."""
+    live = True
+
+    def __init__(self, url, mime="audio/mpeg"):
+        self.url = url
+        self.mime = mime
+        self.offset = self.start_time = self.duration = 0.0
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "TuxAmp"
@@ -739,7 +749,8 @@ class _Chromecast:
     def load(self, url, mime, title, duration, start=0.0):
         self._ensure_app()
         self.msid = None
-        media = {"contentId": url, "contentUrl": url, "contentType": mime, "streamType": "BUFFERED",
+        media = {"contentId": url, "contentUrl": url, "contentType": mime,
+                 "streamType": "BUFFERED" if duration else "LIVE",
                  "metadata": {"metadataType": 3, "title": title, "albumName": "TuxAmp"}}
         if duration:
             media["duration"] = duration
@@ -1063,7 +1074,10 @@ class CastSession:
             _, gen, source, title = c
             if gen != self.gen:
                 return
-            url = self.server.url(self.server.publish(source), self.device.host)
+            if getattr(source, "live", False):
+                url = source.url
+            else:
+                url = self.server.url(self.server.publish(source), self.device.host)
             ctl.load(url, source.mime, title, source.duration, source.start_time)
             with self._lock:
                 if gen == self.gen:
